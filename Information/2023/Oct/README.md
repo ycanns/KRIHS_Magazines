@@ -24,16 +24,16 @@
 <table style="width:%">
 
   <tr>
-      <a href="https://ycanns.github.io/Graphs/sankey_Pop_2013.html"> 2013년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2014.html"> 2014년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2015.html"> 2015년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2016.html"> 2016년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2017.html"> 2017년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2018.html"> 2018년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2019.html"> 2019년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2020.html"> 2020년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2021.html"> 2021년 </a></tr>
-      <tr><a href="https://ycanns.github.io/Graphs/sankey_Pop_2022.html"> 2022년 </a></tr>
+      <a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2013.html"> 2013년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2014.html"> 2014년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2015.html"> 2015년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2016.html"> 2016년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2017.html"> 2017년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2018.html"> 2018년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2019.html"> 2019년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2020.html"> 2020년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2021.html"> 2021년 </a></tr>
+      <tr><a href="https://ycanns.github.io/KRIHS_Magazines/sankey_Pop_2022.html"> 2022년 </a></tr>
   <tr>
 </table>
 
