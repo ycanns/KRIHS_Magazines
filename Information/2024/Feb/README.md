@@ -58,7 +58,7 @@
   </tr>
   
   <tr>
-    <td rowspan="11">eigen centrality 결과 시각화 (부도 4)</td>
+    <td rowspan="11">eigen centrality 결과 시각화 (부도 6)</td>
     <td><a href="https://ycanns.github.io/KRIHS_Magazines/eign_Cntalry_MAP_2012.html"> 2012년 eigen centrality 시각화 >>> </a></td>
       <tr><td><a href="https://ycanns.github.io/KRIHS_Magazines/eign_Cntalry_MAP_2013.html"> 2013년 eigen centrality 시각화 >>> </a></td></tr>
       <tr><td><a href="https://ycanns.github.io/KRIHS_Magazines/eign_Cntalry_MAP_2014.html"> 2014년 eigen centrality 시각화 >>> </a></td></tr>
