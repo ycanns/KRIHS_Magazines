@@ -1,0 +1,2252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>body{background-color:white;}</style>
+<script>(function() {
+  // If window.HTMLWidgets is already defined, then use it; otherwise create a
+  // new object. This allows preceding code to set options that affect the
+  // initialization process (though none currently exist).
+  window.HTMLWidgets = window.HTMLWidgets || {};
+
+  // See if we're running in a viewer pane. If not, we're in a web browser.
+  var viewerMode = window.HTMLWidgets.viewerMode =
+      /\bviewer_pane=1\b/.test(window.location);
+
+  // See if we're running in Shiny mode. If not, it's a static document.
+  // Note that static widgets can appear in both Shiny and static modes, but
+  // obviously, Shiny widgets can only appear in Shiny apps/documents.
+  var shinyMode = window.HTMLWidgets.shinyMode =
+      typeof(window.Shiny) !== "undefined" && !!window.Shiny.outputBindings;
+
+  // We can't count on jQuery being available, so we implement our own
+  // version if necessary.
+  function querySelectorAll(scope, selector) {
+    if (typeof(jQuery) !== "undefined" && scope instanceof jQuery) {
+      return scope.find(selector);
+    }
+    if (scope.querySelectorAll) {
+      return scope.querySelectorAll(selector);
+    }
+  }
+
+  function asArray(value) {
+    if (value === null)
+      return [];
+    if ($.isArray(value))
+      return value;
+    return [value];
+  }
+
+  // Implement jQuery's extend
+  function extend(target /*, ... */) {
+    if (arguments.length == 1) {
+      return target;
+    }
+    for (var i = 1; i < arguments.length; i++) {
+      var source = arguments[i];
+      for (var prop in source) {
+        if (source.hasOwnProperty(prop)) {
+          target[prop] = source[prop];
+        }
+      }
+    }
+    return target;
+  }
+
+  // IE8 doesn't support Array.forEach.
+  function forEach(values, callback, thisArg) {
+    if (values.forEach) {
+      values.forEach(callback, thisArg);
+    } else {
+      for (var i = 0; i < values.length; i++) {
+        callback.call(thisArg, values[i], i, values);
+      }
+    }
+  }
+
+  // Replaces the specified method with the return value of funcSource.
+  //
+  // Note that funcSource should not BE the new method, it should be a function
+  // that RETURNS the new method. funcSource receives a single argument that is
+  // the overridden method, it can be called from the new method. The overridden
+  // method can be called like a regular function, it has the target permanently
+  // bound to it so "this" will work correctly.
+  function overrideMethod(target, methodName, funcSource) {
+    var superFunc = target[methodName] || function() {};
+    var superFuncBound = function() {
+      return superFunc.apply(target, arguments);
+    };
+    target[methodName] = funcSource(superFuncBound);
+  }
+
+  // Add a method to delegator that, when invoked, calls
+  // delegatee.methodName. If there is no such method on
+  // the delegatee, but there was one on delegator before
+  // delegateMethod was called, then the original version
+  // is invoked instead.
+  // For example:
+  //
+  // var a = {
+  //   method1: function() { console.log('a1'); }
+  //   method2: function() { console.log('a2'); }
+  // };
+  // var b = {
+  //   method1: function() { console.log('b1'); }
+  // };
+  // delegateMethod(a, b, "method1");
+  // delegateMethod(a, b, "method2");
+  // a.method1();
+  // a.method2();
+  //
+  // The output would be "b1", "a2".
+  function delegateMethod(delegator, delegatee, methodName) {
+    var inherited = delegator[methodName];
+    delegator[methodName] = function() {
+      var target = delegatee;
+      var method = delegatee[methodName];
+
+      // The method doesn't exist on the delegatee. Instead,
+      // call the method on the delegator, if it exists.
+      if (!method) {
+        target = delegator;
+        method = inherited;
+      }
+
+      if (method) {
+        return method.apply(target, arguments);
+      }
+    };
+  }
+
+  // Implement a vague facsimilie of jQuery's data method
+  function elementData(el, name, value) {
+    if (arguments.length == 2) {
+      return el["htmlwidget_data_" + name];
+    } else if (arguments.length == 3) {
+      el["htmlwidget_data_" + name] = value;
+      return el;
+    } else {
+      throw new Error("Wrong number of arguments for elementData: " +
+        arguments.length);
+    }
+  }
+
+  // http://stackoverflow.com/questions/3446170/escape-string-for-use-in-javascript-regex
+  function escapeRegExp(str) {
+    return str.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
+  }
+
+  function hasClass(el, className) {
+    var re = new RegExp("\\b" + escapeRegExp(className) + "\\b");
+    return re.test(el.className);
+  }
+
+  // elements - array (or array-like object) of HTML elements
+  // className - class name to test for
+  // include - if true, only return elements with given className;
+  //   if false, only return elements *without* given className
+  function filterByClass(elements, className, include) {
+    var results = [];
+    for (var i = 0; i < elements.length; i++) {
+      if (hasClass(elements[i], className) == include)
+        results.push(elements[i]);
+    }
+    return results;
+  }
+
+  function on(obj, eventName, func) {
+    if (obj.addEventListener) {
+      obj.addEventListener(eventName, func, false);
+    } else if (obj.attachEvent) {
+      obj.attachEvent(eventName, func);
+    }
+  }
+
+  function off(obj, eventName, func) {
+    if (obj.removeEventListener)
+      obj.removeEventListener(eventName, func, false);
+    else if (obj.detachEvent) {
+      obj.detachEvent(eventName, func);
+    }
+  }
+
+  // Translate array of values to top/right/bottom/left, as usual with
+  // the "padding" CSS property
+  // https://developer.mozilla.org/en-US/docs/Web/CSS/padding
+  function unpackPadding(value) {
+    if (typeof(value) === "number")
+      value = [value];
+    if (value.length === 1) {
+      return {top: value[0], right: value[0], bottom: value[0], left: value[0]};
+    }
+    if (value.length === 2) {
+      return {top: value[0], right: value[1], bottom: value[0], left: value[1]};
+    }
+    if (value.length === 3) {
+      return {top: value[0], right: value[1], bottom: value[2], left: value[1]};
+    }
+    if (value.length === 4) {
+      return {top: value[0], right: value[1], bottom: value[2], left: value[3]};
+    }
+  }
+
+  // Convert an unpacked padding object to a CSS value
+  function paddingToCss(paddingObj) {
+    return paddingObj.top + "px " + paddingObj.right + "px " + paddingObj.bottom + "px " + paddingObj.left + "px";
+  }
+
+  // Makes a number suitable for CSS
+  function px(x) {
+    if (typeof(x) === "number")
+      return x + "px";
+    else
+      return x;
+  }
+
+  // Retrieves runtime widget sizing information for an element.
+  // The return value is either null, or an object with fill, padding,
+  // defaultWidth, defaultHeight fields.
+  function sizingPolicy(el) {
+    var sizingEl = document.querySelector("script[data-for='" + el.id + "'][type='application/htmlwidget-sizing']");
+    if (!sizingEl)
+      return null;
+    var sp = JSON.parse(sizingEl.textContent || sizingEl.text || "{}");
+    if (viewerMode) {
+      return sp.viewer;
+    } else {
+      return sp.browser;
+    }
+  }
+
+  // @param tasks Array of strings (or falsy value, in which case no-op).
+  //   Each element must be a valid JavaScript expression that yields a
+  //   function. Or, can be an array of objects with "code" and "data"
+  //   properties; in this case, the "code" property should be a string
+  //   of JS that's an expr that yields a function, and "data" should be
+  //   an object that will be added as an additional argument when that
+  //   function is called.
+  // @param target The object that will be "this" for each function
+  //   execution.
+  // @param args Array of arguments to be passed to the functions. (The
+  //   same arguments will be passed to all functions.)
+  function evalAndRun(tasks, target, args) {
+    if (tasks) {
+      forEach(tasks, function(task) {
+        var theseArgs = args;
+        if (typeof(task) === "object") {
+          theseArgs = theseArgs.concat([task.data]);
+          task = task.code;
+        }
+        var taskFunc = tryEval(task);
+        if (typeof(taskFunc) !== "function") {
+          throw new Error("Task must be a function! Source:\n" + task);
+        }
+        taskFunc.apply(target, theseArgs);
+      });
+    }
+  }
+
+  // Attempt eval() both with and without enclosing in parentheses.
+  // Note that enclosing coerces a function declaration into
+  // an expression that eval() can parse
+  // (otherwise, a SyntaxError is thrown)
+  function tryEval(code) {
+    var result = null;
+    try {
+      result = eval("(" + code + ")");
+    } catch(error) {
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
+      try {
+        result = eval(code);
+      } catch(e) {
+        if (e instanceof SyntaxError) {
+          throw error;
+        } else {
+          throw e;
+        }
+      }
+    }
+    return result;
+  }
+
+  function initSizing(el) {
+    var sizing = sizingPolicy(el);
+    if (!sizing)
+      return;
+
+    var cel = document.getElementById("htmlwidget_container");
+    if (!cel)
+      return;
+
+    if (typeof(sizing.padding) !== "undefined") {
+      document.body.style.margin = "0";
+      document.body.style.padding = paddingToCss(unpackPadding(sizing.padding));
+    }
+
+    if (sizing.fill) {
+      document.body.style.overflow = "hidden";
+      document.body.style.width = "100%";
+      document.body.style.height = "100%";
+      document.documentElement.style.width = "100%";
+      document.documentElement.style.height = "100%";
+      cel.style.position = "absolute";
+      var pad = unpackPadding(sizing.padding);
+      cel.style.top = pad.top + "px";
+      cel.style.right = pad.right + "px";
+      cel.style.bottom = pad.bottom + "px";
+      cel.style.left = pad.left + "px";
+      el.style.width = "100%";
+      el.style.height = "100%";
+
+      return {
+        getWidth: function() { return cel.getBoundingClientRect().width; },
+        getHeight: function() { return cel.getBoundingClientRect().height; }
+      };
+
+    } else {
+      el.style.width = px(sizing.width);
+      el.style.height = px(sizing.height);
+
+      return {
+        getWidth: function() { return cel.getBoundingClientRect().width; },
+        getHeight: function() { return cel.getBoundingClientRect().height; }
+      };
+    }
+  }
+
+  // Default implementations for methods
+  var defaults = {
+    find: function(scope) {
+      return querySelectorAll(scope, "." + this.name);
+    },
+    renderError: function(el, err) {
+      var $el = $(el);
+
+      this.clearError(el);
+
+      // Add all these error classes, as Shiny does
+      var errClass = "shiny-output-error";
+      if (err.type !== null) {
+        // use the classes of the error condition as CSS class names
+        errClass = errClass + " " + $.map(asArray(err.type), function(type) {
+          return errClass + "-" + type;
+        }).join(" ");
+      }
+      errClass = errClass + " htmlwidgets-error";
+
+      // Is el inline or block? If inline or inline-block, just display:none it
+      // and add an inline error.
+      var display = $el.css("display");
+      $el.data("restore-display-mode", display);
+
+      if (display === "inline" || display === "inline-block") {
+        $el.hide();
+        if (err.message !== "") {
+          var errorSpan = $("<span>").addClass(errClass);
+          errorSpan.text(err.message);
+          $el.after(errorSpan);
+        }
+      } else if (display === "block") {
+        // If block, add an error just after the el, set visibility:none on the
+        // el, and position the error to be on top of the el.
+        // Mark it with a unique ID and CSS class so we can remove it later.
+        $el.css("visibility", "hidden");
+        if (err.message !== "") {
+          var errorDiv = $("<div>").addClass(errClass).css("position", "absolute")
+            .css("top", el.offsetTop)
+            .css("left", el.offsetLeft)
+            // setting width can push out the page size, forcing otherwise
+            // unnecessary scrollbars to appear and making it impossible for
+            // the element to shrink; so use max-width instead
+            .css("maxWidth", el.offsetWidth)
+            .css("height", el.offsetHeight);
+          errorDiv.text(err.message);
+          $el.after(errorDiv);
+
+          // Really dumb way to keep the size/position of the error in sync with
+          // the parent element as the window is resized or whatever.
+          var intId = setInterval(function() {
+            if (!errorDiv[0].parentElement) {
+              clearInterval(intId);
+              return;
+            }
+            errorDiv
+              .css("top", el.offsetTop)
+              .css("left", el.offsetLeft)
+              .css("maxWidth", el.offsetWidth)
+              .css("height", el.offsetHeight);
+          }, 500);
+        }
+      }
+    },
+    clearError: function(el) {
+      var $el = $(el);
+      var display = $el.data("restore-display-mode");
+      $el.data("restore-display-mode", null);
+
+      if (display === "inline" || display === "inline-block") {
+        if (display)
+          $el.css("display", display);
+        $(el.nextSibling).filter(".htmlwidgets-error").remove();
+      } else if (display === "block"){
+        $el.css("visibility", "inherit");
+        $(el.nextSibling).filter(".htmlwidgets-error").remove();
+      }
+    },
+    sizing: {}
+  };
+
+  // Called by widget bindings to register a new type of widget. The definition
+  // object can contain the following properties:
+  // - name (required) - A string indicating the binding name, which will be
+  //   used by default as the CSS classname to look for.
+  // - initialize (optional) - A function(el) that will be called once per
+  //   widget element; if a value is returned, it will be passed as the third
+  //   value to renderValue.
+  // - renderValue (required) - A function(el, data, initValue) that will be
+  //   called with data. Static contexts will cause this to be called once per
+  //   element; Shiny apps will cause this to be called multiple times per
+  //   element, as the data changes.
+  window.HTMLWidgets.widget = function(definition) {
+    if (!definition.name) {
+      throw new Error("Widget must have a name");
+    }
+    if (!definition.type) {
+      throw new Error("Widget must have a type");
+    }
+    // Currently we only support output widgets
+    if (definition.type !== "output") {
+      throw new Error("Unrecognized widget type '" + definition.type + "'");
+    }
+    // TODO: Verify that .name is a valid CSS classname
+
+    // Support new-style instance-bound definitions. Old-style class-bound
+    // definitions have one widget "object" per widget per type/class of
+    // widget; the renderValue and resize methods on such widget objects
+    // take el and instance arguments, because the widget object can't
+    // store them. New-style instance-bound definitions have one widget
+    // object per widget instance; the definition that's passed in doesn't
+    // provide renderValue or resize methods at all, just the single method
+    //   factory(el, width, height)
+    // which returns an object that has renderValue(x) and resize(w, h).
+    // This enables a far more natural programming style for the widget
+    // author, who can store per-instance state using either OO-style
+    // instance fields or functional-style closure variables (I guess this
+    // is in contrast to what can only be called C-style pseudo-OO which is
+    // what we required before).
+    if (definition.factory) {
+      definition = createLegacyDefinitionAdapter(definition);
+    }
+
+    if (!definition.renderValue) {
+      throw new Error("Widget must have a renderValue function");
+    }
+
+    // For static rendering (non-Shiny), use a simple widget registration
+    // scheme. We also use this scheme for Shiny apps/documents that also
+    // contain static widgets.
+    window.HTMLWidgets.widgets = window.HTMLWidgets.widgets || [];
+    // Merge defaults into the definition; don't mutate the original definition.
+    var staticBinding = extend({}, defaults, definition);
+    overrideMethod(staticBinding, "find", function(superfunc) {
+      return function(scope) {
+        var results = superfunc(scope);
+        // Filter out Shiny outputs, we only want the static kind
+        return filterByClass(results, "html-widget-output", false);
+      };
+    });
+    window.HTMLWidgets.widgets.push(staticBinding);
+
+    if (shinyMode) {
+      // Shiny is running. Register the definition with an output binding.
+      // The definition itself will not be the output binding, instead
+      // we will make an output binding object that delegates to the
+      // definition. This is because we foolishly used the same method
+      // name (renderValue) for htmlwidgets definition and Shiny bindings
+      // but they actually have quite different semantics (the Shiny
+      // bindings receive data that includes lots of metadata that it
+      // strips off before calling htmlwidgets renderValue). We can't
+      // just ignore the difference because in some widgets it's helpful
+      // to call this.renderValue() from inside of resize(), and if
+      // we're not delegating, then that call will go to the Shiny
+      // version instead of the htmlwidgets version.
+
+      // Merge defaults with definition, without mutating either.
+      var bindingDef = extend({}, defaults, definition);
+
+      // This object will be our actual Shiny binding.
+      var shinyBinding = new Shiny.OutputBinding();
+
+      // With a few exceptions, we'll want to simply use the bindingDef's
+      // version of methods if they are available, otherwise fall back to
+      // Shiny's defaults. NOTE: If Shiny's output bindings gain additional
+      // methods in the future, and we want them to be overrideable by
+      // HTMLWidget binding definitions, then we'll need to add them to this
+      // list.
+      delegateMethod(shinyBinding, bindingDef, "getId");
+      delegateMethod(shinyBinding, bindingDef, "onValueChange");
+      delegateMethod(shinyBinding, bindingDef, "onValueError");
+      delegateMethod(shinyBinding, bindingDef, "renderError");
+      delegateMethod(shinyBinding, bindingDef, "clearError");
+      delegateMethod(shinyBinding, bindingDef, "showProgress");
+
+      // The find, renderValue, and resize are handled differently, because we
+      // want to actually decorate the behavior of the bindingDef methods.
+
+      shinyBinding.find = function(scope) {
+        var results = bindingDef.find(scope);
+
+        // Only return elements that are Shiny outputs, not static ones
+        var dynamicResults = results.filter(".html-widget-output");
+
+        // It's possible that whatever caused Shiny to think there might be
+        // new dynamic outputs, also caused there to be new static outputs.
+        // Since there might be lots of different htmlwidgets bindings, we
+        // schedule execution for later--no need to staticRender multiple
+        // times.
+        if (results.length !== dynamicResults.length)
+          scheduleStaticRender();
+
+        return dynamicResults;
+      };
+
+      // Wrap renderValue to handle initialization, which unfortunately isn't
+      // supported natively by Shiny at the time of this writing.
+
+      shinyBinding.renderValue = function(el, data) {
+        Shiny.renderDependencies(data.deps);
+        // Resolve strings marked as javascript literals to objects
+        if (!(data.evals instanceof Array)) data.evals = [data.evals];
+        for (var i = 0; data.evals && i < data.evals.length; i++) {
+          window.HTMLWidgets.evaluateStringMember(data.x, data.evals[i]);
+        }
+        if (!bindingDef.renderOnNullValue) {
+          if (data.x === null) {
+            el.style.visibility = "hidden";
+            return;
+          } else {
+            el.style.visibility = "inherit";
+          }
+        }
+        if (!elementData(el, "initialized")) {
+          initSizing(el);
+
+          elementData(el, "initialized", true);
+          if (bindingDef.initialize) {
+            var rect = el.getBoundingClientRect();
+            var result = bindingDef.initialize(el, rect.width, rect.height);
+            elementData(el, "init_result", result);
+          }
+        }
+        bindingDef.renderValue(el, data.x, elementData(el, "init_result"));
+        evalAndRun(data.jsHooks.render, elementData(el, "init_result"), [el, data.x]);
+      };
+
+      // Only override resize if bindingDef implements it
+      if (bindingDef.resize) {
+        shinyBinding.resize = function(el, width, height) {
+          // Shiny can call resize before initialize/renderValue have been
+          // called, which doesn't make sense for widgets.
+          if (elementData(el, "initialized")) {
+            bindingDef.resize(el, width, height, elementData(el, "init_result"));
+          }
+        };
+      }
+
+      Shiny.outputBindings.register(shinyBinding, bindingDef.name);
+    }
+  };
+
+  var scheduleStaticRenderTimerId = null;
+  function scheduleStaticRender() {
+    if (!scheduleStaticRenderTimerId) {
+      scheduleStaticRenderTimerId = setTimeout(function() {
+        scheduleStaticRenderTimerId = null;
+        window.HTMLWidgets.staticRender();
+      }, 1);
+    }
+  }
+
+  // Render static widgets after the document finishes loading
+  // Statically render all elements that are of this widget's class
+  window.HTMLWidgets.staticRender = function() {
+    var bindings = window.HTMLWidgets.widgets || [];
+    forEach(bindings, function(binding) {
+      var matches = binding.find(document.documentElement);
+      forEach(matches, function(el) {
+        var sizeObj = initSizing(el, binding);
+
+        var getSize = function(el) {
+          if (sizeObj) {
+            return {w: sizeObj.getWidth(), h: sizeObj.getHeight()}
+          } else {
+            var rect = el.getBoundingClientRect();
+            return {w: rect.width, h: rect.height}
+          }
+        };
+
+        if (hasClass(el, "html-widget-static-bound"))
+          return;
+        el.className = el.className + " html-widget-static-bound";
+
+        var initResult;
+        if (binding.initialize) {
+          var size = getSize(el);
+          initResult = binding.initialize(el, size.w, size.h);
+          elementData(el, "init_result", initResult);
+        }
+
+        if (binding.resize) {
+          var lastSize = getSize(el);
+          var resizeHandler = function(e) {
+            var size = getSize(el);
+            if (size.w === 0 && size.h === 0)
+              return;
+            if (size.w === lastSize.w && size.h === lastSize.h)
+              return;
+            lastSize = size;
+            binding.resize(el, size.w, size.h, initResult);
+          };
+
+          on(window, "resize", resizeHandler);
+
+          // This is needed for cases where we're running in a Shiny
+          // app, but the widget itself is not a Shiny output, but
+          // rather a simple static widget. One example of this is
+          // an rmarkdown document that has runtime:shiny and widget
+          // that isn't in a render function. Shiny only knows to
+          // call resize handlers for Shiny outputs, not for static
+          // widgets, so we do it ourselves.
+          if (window.jQuery) {
+            window.jQuery(document).on(
+              "shown.htmlwidgets shown.bs.tab.htmlwidgets shown.bs.collapse.htmlwidgets",
+              resizeHandler
+            );
+            window.jQuery(document).on(
+              "hidden.htmlwidgets hidden.bs.tab.htmlwidgets hidden.bs.collapse.htmlwidgets",
+              resizeHandler
+            );
+          }
+
+          // This is needed for the specific case of ioslides, which
+          // flips slides between display:none and display:block.
+          // Ideally we would not have to have ioslide-specific code
+          // here, but rather have ioslides raise a generic event,
+          // but the rmarkdown package just went to CRAN so the
+          // window to getting that fixed may be long.
+          if (window.addEventListener) {
+            // It's OK to limit this to window.addEventListener
+            // browsers because ioslides itself only supports
+            // such browsers.
+            on(document, "slideenter", resizeHandler);
+            on(document, "slideleave", resizeHandler);
+          }
+        }
+
+        var scriptData = document.querySelector("script[data-for='" + el.id + "'][type='application/json']");
+        if (scriptData) {
+          var data = JSON.parse(scriptData.textContent || scriptData.text);
+          // Resolve strings marked as javascript literals to objects
+          if (!(data.evals instanceof Array)) data.evals = [data.evals];
+          for (var k = 0; data.evals && k < data.evals.length; k++) {
+            window.HTMLWidgets.evaluateStringMember(data.x, data.evals[k]);
+          }
+          binding.renderValue(el, data.x, initResult);
+          evalAndRun(data.jsHooks.render, initResult, [el, data.x]);
+        }
+      });
+    });
+
+    invokePostRenderHandlers();
+  }
+
+
+  function has_jQuery3() {
+    if (!window.jQuery) {
+      return false;
+    }
+    var $version = window.jQuery.fn.jquery;
+    var $major_version = parseInt($version.split(".")[0]);
+    return $major_version >= 3;
+  }
+
+  /*
+  / Shiny 1.4 bumped jQuery from 1.x to 3.x which means jQuery's
+  / on-ready handler (i.e., $(fn)) is now asyncronous (i.e., it now
+  / really means $(setTimeout(fn)).
+  / https://jquery.com/upgrade-guide/3.0/#breaking-change-document-ready-handlers-are-now-asynchronous
+  /
+  / Since Shiny uses $() to schedule initShiny, shiny>=1.4 calls initShiny
+  / one tick later than it did before, which means staticRender() is
+  / called renderValue() earlier than (advanced) widget authors might be expecting.
+  / https://github.com/rstudio/shiny/issues/2630
+  /
+  / For a concrete example, leaflet has some methods (e.g., updateBounds)
+  / which reference Shiny methods registered in initShiny (e.g., setInputValue).
+  / Since leaflet is privy to this life-cycle, it knows to use setTimeout() to
+  / delay execution of those methods (until Shiny methods are ready)
+  / https://github.com/rstudio/leaflet/blob/18ec981/javascript/src/index.js#L266-L268
+  /
+  / Ideally widget authors wouldn't need to use this setTimeout() hack that
+  / leaflet uses to call Shiny methods on a staticRender(). In the long run,
+  / the logic initShiny should be broken up so that method registration happens
+  / right away, but binding happens later.
+  */
+  function maybeStaticRenderLater() {
+    if (shinyMode && has_jQuery3()) {
+      window.jQuery(window.HTMLWidgets.staticRender);
+    } else {
+      window.HTMLWidgets.staticRender();
+    }
+  }
+
+  if (document.addEventListener) {
+    document.addEventListener("DOMContentLoaded", function() {
+      document.removeEventListener("DOMContentLoaded", arguments.callee, false);
+      maybeStaticRenderLater();
+    }, false);
+  } else if (document.attachEvent) {
+    document.attachEvent("onreadystatechange", function() {
+      if (document.readyState === "complete") {
+        document.detachEvent("onreadystatechange", arguments.callee);
+        maybeStaticRenderLater();
+      }
+    });
+  }
+
+
+  window.HTMLWidgets.getAttachmentUrl = function(depname, key) {
+    // If no key, default to the first item
+    if (typeof(key) === "undefined")
+      key = 1;
+
+    var link = document.getElementById(depname + "-" + key + "-attachment");
+    if (!link) {
+      throw new Error("Attachment " + depname + "/" + key + " not found in document");
+    }
+    return link.getAttribute("href");
+  };
+
+  window.HTMLWidgets.dataframeToD3 = function(df) {
+    var names = [];
+    var length;
+    for (var name in df) {
+        if (df.hasOwnProperty(name))
+            names.push(name);
+        if (typeof(df[name]) !== "object" || typeof(df[name].length) === "undefined") {
+            throw new Error("All fields must be arrays");
+        } else if (typeof(length) !== "undefined" && length !== df[name].length) {
+            throw new Error("All fields must be arrays of the same length");
+        }
+        length = df[name].length;
+    }
+    var results = [];
+    var item;
+    for (var row = 0; row < length; row++) {
+        item = {};
+        for (var col = 0; col < names.length; col++) {
+            item[names[col]] = df[names[col]][row];
+        }
+        results.push(item);
+    }
+    return results;
+  };
+
+  window.HTMLWidgets.transposeArray2D = function(array) {
+      if (array.length === 0) return array;
+      var newArray = array[0].map(function(col, i) {
+          return array.map(function(row) {
+              return row[i]
+          })
+      });
+      return newArray;
+  };
+  // Split value at splitChar, but allow splitChar to be escaped
+  // using escapeChar. Any other characters escaped by escapeChar
+  // will be included as usual (including escapeChar itself).
+  function splitWithEscape(value, splitChar, escapeChar) {
+    var results = [];
+    var escapeMode = false;
+    var currentResult = "";
+    for (var pos = 0; pos < value.length; pos++) {
+      if (!escapeMode) {
+        if (value[pos] === splitChar) {
+          results.push(currentResult);
+          currentResult = "";
+        } else if (value[pos] === escapeChar) {
+          escapeMode = true;
+        } else {
+          currentResult += value[pos];
+        }
+      } else {
+        currentResult += value[pos];
+        escapeMode = false;
+      }
+    }
+    if (currentResult !== "") {
+      results.push(currentResult);
+    }
+    return results;
+  }
+  // Function authored by Yihui/JJ Allaire
+  window.HTMLWidgets.evaluateStringMember = function(o, member) {
+    var parts = splitWithEscape(member, '.', '\\');
+    for (var i = 0, l = parts.length; i < l; i++) {
+      var part = parts[i];
+      // part may be a character or 'numeric' member name
+      if (o !== null && typeof o === "object" && part in o) {
+        if (i == (l - 1)) { // if we are at the end of the line then evalulate
+          if (typeof o[part] === "string")
+            o[part] = tryEval(o[part]);
+        } else { // otherwise continue to next embedded object
+          o = o[part];
+        }
+      }
+    }
+  };
+
+  // Retrieve the HTMLWidget instance (i.e. the return value of an
+  // HTMLWidget binding's initialize() or factory() function)
+  // associated with an element, or null if none.
+  window.HTMLWidgets.getInstance = function(el) {
+    return elementData(el, "init_result");
+  };
+
+  // Finds the first element in the scope that matches the selector,
+  // and returns the HTMLWidget instance (i.e. the return value of
+  // an HTMLWidget binding's initialize() or factory() function)
+  // associated with that element, if any. If no element matches the
+  // selector, or the first matching element has no HTMLWidget
+  // instance associated with it, then null is returned.
+  //
+  // The scope argument is optional, and defaults to window.document.
+  window.HTMLWidgets.find = function(scope, selector) {
+    if (arguments.length == 1) {
+      selector = scope;
+      scope = document;
+    }
+
+    var el = scope.querySelector(selector);
+    if (el === null) {
+      return null;
+    } else {
+      return window.HTMLWidgets.getInstance(el);
+    }
+  };
+
+  // Finds all elements in the scope that match the selector, and
+  // returns the HTMLWidget instances (i.e. the return values of
+  // an HTMLWidget binding's initialize() or factory() function)
+  // associated with the elements, in an array. If elements that
+  // match the selector don't have an associated HTMLWidget
+  // instance, the returned array will contain nulls.
+  //
+  // The scope argument is optional, and defaults to window.document.
+  window.HTMLWidgets.findAll = function(scope, selector) {
+    if (arguments.length == 1) {
+      selector = scope;
+      scope = document;
+    }
+
+    var nodes = scope.querySelectorAll(selector);
+    var results = [];
+    for (var i = 0; i < nodes.length; i++) {
+      results.push(window.HTMLWidgets.getInstance(nodes[i]));
+    }
+    return results;
+  };
+
+  var postRenderHandlers = [];
+  function invokePostRenderHandlers() {
+    while (postRenderHandlers.length) {
+      var handler = postRenderHandlers.shift();
+      if (handler) {
+        handler();
+      }
+    }
+  }
+
+  // Register the given callback function to be invoked after the
+  // next time static widgets are rendered.
+  window.HTMLWidgets.addPostRenderHandler = function(callback) {
+    postRenderHandlers.push(callback);
+  };
+
+  // Takes a new-style instance-bound definition, and returns an
+  // old-style class-bound definition. This saves us from having
+  // to rewrite all the logic in this file to accomodate both
+  // types of definitions.
+  function createLegacyDefinitionAdapter(defn) {
+    var result = {
+      name: defn.name,
+      type: defn.type,
+      initialize: function(el, width, height) {
+        return defn.factory(el, width, height);
+      },
+      renderValue: function(el, x, instance) {
+        return instance.renderValue(x);
+      },
+      resize: function(el, width, height, instance) {
+        return instance.resize(width, height);
+      }
+    };
+
+    if (defn.find)
+      result.find = defn.find;
+    if (defn.renderError)
+      result.renderError = defn.renderError;
+    if (defn.clearError)
+      result.clearError = defn.clearError;
+
+    return result;
+  }
+})();
+</script>
+<style type="text/css">#wcLabel {position: absolute;border: 2px solid #fff;box-shadow: 0 0 4px 0 #008;padding: 2px;pointer-events: none; }#wcSpan {position: absolute;top: 100%;left: 0;background-color: rgba(255, 255, 255, 0.8);color: #333;margin-top: 6px;padding: 0 0.5em;border-radius: 0.5em;white-space: nowrap; }</style>
+<script>/*!
+ * wordcloud2.js
+ * http://timdream.org/wordcloud2.js/
+ *
+ * Copyright 2011 - 2013 Tim Chien
+ * Released under the MIT license
+ */
+
+'use strict';
+
+// setImmediate
+if (!window.setImmediate) {
+  window.setImmediate = (function setupSetImmediate() {
+    return window.msSetImmediate ||
+    window.webkitSetImmediate ||
+    window.mozSetImmediate ||
+    window.oSetImmediate ||
+    (function setupSetZeroTimeout() {
+      if (!window.postMessage || !window.addEventListener) {
+        return null;
+      }
+
+      var callbacks = [undefined];
+      var message = 'zero-timeout-message';
+
+      // Like setTimeout, but only takes a function argument.  There's
+      // no time argument (always zero) and no arguments (you have to
+      // use a closure).
+      var setZeroTimeout = function setZeroTimeout(callback) {
+        var id = callbacks.length;
+        callbacks.push(callback);
+        window.postMessage(message + id.toString(36), '*');
+
+        return id;
+      };
+
+      window.addEventListener('message', function setZeroTimeoutMessage(evt) {
+        // Skipping checking event source, retarded IE confused this window
+        // object with another in the presence of iframe
+        if (typeof evt.data !== 'string' ||
+            evt.data.substr(0, message.length) !== message/* ||
+            evt.source !== window */) {
+          return;
+        }
+
+        evt.stopImmediatePropagation();
+
+        var id = parseInt(evt.data.substr(message.length), 36);
+        if (!callbacks[id]) {
+          return;
+        }
+
+        callbacks[id]();
+        callbacks[id] = undefined;
+      }, true);
+
+      /* specify clearImmediate() here since we need the scope */
+      window.clearImmediate = function clearZeroTimeout(id) {
+        if (!callbacks[id]) {
+          return;
+        }
+
+        callbacks[id] = undefined;
+      };
+
+      return setZeroTimeout;
+    })() ||
+    // fallback
+    function setImmediateFallback(fn) {
+      window.setTimeout(fn, 0);
+    };
+  })();
+}
+
+if (!window.clearImmediate) {
+  window.clearImmediate = (function setupClearImmediate() {
+    return window.msClearImmediate ||
+    window.webkitClearImmediate ||
+    window.mozClearImmediate ||
+    window.oClearImmediate ||
+    // "clearZeroTimeout" is implement on the previous block ||
+    // fallback
+    function clearImmediateFallback(timer) {
+      window.clearTimeout(timer);
+    };
+  })();
+}
+
+(function(global) {
+
+  // Check if WordCloud can run on this browser
+  var isSupported = (function isSupported() {
+    var canvas = document.createElement('canvas');
+    if (!canvas || !canvas.getContext) {
+      return false;
+    }
+
+    var ctx = canvas.getContext('2d');
+    if (!ctx.getImageData) {
+      return false;
+    }
+    if (!ctx.fillText) {
+      return false;
+    }
+
+    if (!Array.prototype.some) {
+      return false;
+    }
+    if (!Array.prototype.push) {
+      return false;
+    }
+
+    return true;
+  }());
+
+  // Find out if the browser impose minium font size by
+  // drawing small texts on a canvas and measure it's width.
+  var minFontSize = (function getMinFontSize() {
+    if (!isSupported) {
+      return;
+    }
+
+    var ctx = document.createElement('canvas').getContext('2d');
+
+    // start from 20
+    var size = 20;
+
+    // two sizes to measure
+    var hanWidth, mWidth;
+
+    while (size) {
+      ctx.font = size.toString(10) + 'px sans-serif';
+      if ((ctx.measureText('\uFF37').width === hanWidth) &&
+          (ctx.measureText('m').width) === mWidth) {
+        return (size + 1);
+      }
+
+      hanWidth = ctx.measureText('\uFF37').width;
+      mWidth = ctx.measureText('m').width;
+
+      size--;
+    }
+
+    return 0;
+  })();
+
+  // Based on http://jsfromhell.com/array/shuffle
+  var shuffleArray = function shuffleArray(arr) {
+    for (var j, x, i = arr.length; i;
+      j = Math.floor(Math.random() * i),
+      x = arr[--i], arr[i] = arr[j],
+      arr[j] = x) {}
+    return arr;
+  };
+
+  var WordCloud = function WordCloud(elements, options) {
+    if (!isSupported) {
+      return;
+    }
+
+    if (!Array.isArray(elements)) {
+      elements = [elements];
+    }
+
+    elements.forEach(function(el, i) {
+      if (typeof el === 'string') {
+        elements[i] = document.getElementById(el);
+        if (!elements[i]) {
+          throw 'The element id specified is not found.';
+        }
+      } else if (!el.tagName && !el.appendChild) {
+        throw 'You must pass valid HTML elements, or ID of the element.';
+      }
+    });
+
+    /* Default values to be overwritten by options object */
+    var settings = {
+      list: [],
+      fontFamily: '"Trebuchet MS", "Heiti TC", "微軟正黑體", ' +
+                  '"Arial Unicode MS", "Droid Fallback Sans", sans-serif',
+      fontWeight: 'normal',
+      color: 'random-dark',
+      minSize: 0, // 0 to disable
+      weightFactor: 1,
+      clearCanvas: true,
+      backgroundColor: '#fff',  // opaque white = rgba(255, 255, 255, 1)
+
+      gridSize: 8,
+      origin: null,
+
+      drawMask: false,
+      maskColor: 'rgba(255,0,0,0.3)',
+      maskGapWidth: 0.3,
+
+      wait: 0,
+      abortThreshold: 0, // disabled
+      abort: function noop() {},
+
+      minRotation: - Math.PI / 2,
+      maxRotation: Math.PI / 2,
+
+      shuffle: true,
+      rotateRatio: 0.1,
+
+      shape: 'circle',
+      ellipticity: 0.65,
+
+      classes: null,
+
+      hover: null,
+      click: null
+    };
+
+    if (options) {
+      for (var key in options) {
+        if (key in settings) {
+          settings[key] = options[key];
+        }
+      }
+    }
+
+    /* Convert weightFactor into a function */
+    if (typeof settings.weightFactor !== 'function') {
+      var factor = settings.weightFactor;
+      settings.weightFactor = function weightFactor(pt) {
+        return pt * factor; //in px
+      };
+    }
+
+    /* Convert shape into a function */
+    if (typeof settings.shape !== 'function') {
+      switch (settings.shape) {
+        case 'circle':
+        /* falls through */
+        default:
+          // 'circle' is the default and a shortcut in the code loop.
+          settings.shape = 'circle';
+          break;
+
+        case 'cardioid':
+          settings.shape = function shapeCardioid(theta) {
+            return 1 - Math.sin(theta);
+          };
+          break;
+
+        /*
+
+        To work out an X-gon, one has to calculate "m",
+        where 1/(cos(2*PI/X)+m*sin(2*PI/X)) = 1/(cos(0)+m*sin(0))
+        http://www.wolframalpha.com/input/?i=1%2F%28cos%282*PI%2FX%29%2Bm*sin%28
+        2*PI%2FX%29%29+%3D+1%2F%28cos%280%29%2Bm*sin%280%29%29
+
+        Copy the solution into polar equation r = 1/(cos(t') + m*sin(t'))
+        where t' equals to mod(t, 2PI/X);
+
+        */
+
+        case 'diamond':
+        case 'square':
+          // http://www.wolframalpha.com/input/?i=plot+r+%3D+1%2F%28cos%28mod+
+          // %28t%2C+PI%2F2%29%29%2Bsin%28mod+%28t%2C+PI%2F2%29%29%29%2C+t+%3D
+          // +0+..+2*PI
+          settings.shape = function shapeSquare(theta) {
+            var thetaPrime = theta % (2 * Math.PI / 4);
+            return 1 / (Math.cos(thetaPrime) + Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'triangle-forward':
+          // http://www.wolframalpha.com/input/?i=plot+r+%3D+1%2F%28cos%28mod+
+          // %28t%2C+2*PI%2F3%29%29%2Bsqrt%283%29sin%28mod+%28t%2C+2*PI%2F3%29
+          // %29%29%2C+t+%3D+0+..+2*PI
+          settings.shape = function shapeTriangle(theta) {
+            var thetaPrime = theta % (2 * Math.PI / 3);
+            return 1 / (Math.cos(thetaPrime) +
+                        Math.sqrt(3) * Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'triangle':
+        case 'triangle-upright':
+          settings.shape = function shapeTriangle(theta) {
+            var thetaPrime = (theta + Math.PI * 3 / 2) % (2 * Math.PI / 3);
+            return 1 / (Math.cos(thetaPrime) +
+                        Math.sqrt(3) * Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'pentagon':
+          settings.shape = function shapePentagon(theta) {
+            var thetaPrime = (theta + 0.955) % (2 * Math.PI / 5);
+            return 1 / (Math.cos(thetaPrime) +
+                        0.726543 * Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'star':
+          settings.shape = function shapeStar(theta) {
+            var thetaPrime = (theta + 0.955) % (2 * Math.PI / 10);
+            if ((theta + 0.955) % (2 * Math.PI / 5) - (2 * Math.PI / 10) >= 0) {
+              return 1 / (Math.cos((2 * Math.PI / 10) - thetaPrime) +
+                          3.07768 * Math.sin((2 * Math.PI / 10) - thetaPrime));
+            } else {
+              return 1 / (Math.cos(thetaPrime) +
+                          3.07768 * Math.sin(thetaPrime));
+            }
+          };
+          break;
+      }
+    }
+
+    /* Make sure gridSize is a whole number and is not smaller than 4px */
+    settings.gridSize = Math.max(Math.floor(settings.gridSize), 4);
+
+    /* shorthand */
+    var g = settings.gridSize;
+    var maskRectWidth = g - settings.maskGapWidth;
+
+    /* normalize rotation settings */
+    var rotationRange = Math.abs(settings.maxRotation - settings.minRotation);
+    var minRotation = Math.min(settings.maxRotation, settings.minRotation);
+
+    /* information/object available to all functions, set when start() */
+    var grid, // 2d array containing filling information
+      ngx, ngy, // width and height of the grid
+      center, // position of the center of the cloud
+      maxRadius;
+
+    /* timestamp for measuring each putWord() action */
+    var escapeTime;
+
+    /* function for getting the color of the text */
+    var getTextColor;
+    function random_hsl_color(min, max) {
+      return 'hsl(' +
+        (Math.random() * 360).toFixed() + ',' +
+        (Math.random() * 30 + 70).toFixed() + '%,' +
+        (Math.random() * (max - min) + min).toFixed() + '%)';
+    }
+    switch (settings.color) {
+      case 'random-dark':
+        getTextColor = function getRandomDarkColor() {
+          return random_hsl_color(10, 50);
+        };
+        break;
+
+      case 'random-light':
+        getTextColor = function getRandomLightColor() {
+          return random_hsl_color(50, 90);
+        };
+        break;
+
+      default:
+        if (typeof settings.color === 'function') {
+          getTextColor = settings.color;
+        }
+        break;
+    }
+
+    /* function for getting the classes of the text */
+    var getTextClasses = null;
+    if (typeof settings.classes === 'function') {
+      getTextClasses = settings.classes;
+    }
+
+    /* Interactive */
+    var interactive = false;
+    var infoGrid = [];
+    var hovered;
+
+    var getInfoGridFromMouseTouchEvent =
+    function getInfoGridFromMouseTouchEvent(evt) {
+      var canvas = evt.currentTarget;
+      var rect = canvas.getBoundingClientRect();
+      var clientX;
+      var clientY;
+      /** Detect if touches are available */
+      if (evt.touches) {
+        clientX = evt.touches[0].clientX;
+        clientY = evt.touches[0].clientY;
+      } else {
+        clientX = evt.clientX;
+        clientY = evt.clientY;
+      }
+      var eventX = clientX - rect.left;
+      var eventY = clientY - rect.top;
+
+      var x = Math.floor(eventX * ((canvas.width / rect.width) || 1) / g);
+      var y = Math.floor(eventY * ((canvas.height / rect.height) || 1) / g);
+
+      return infoGrid[x][y];
+    };
+
+    var wordcloudhover = function wordcloudhover(evt) {
+      var info = getInfoGridFromMouseTouchEvent(evt);
+
+      if (hovered === info) {
+        return;
+      }
+
+      hovered = info;
+      if (!info) {
+        settings.hover(undefined, undefined, evt);
+
+        return;
+      }
+
+      settings.hover(info.item, info.dimension, evt);
+
+    };
+
+    var wordcloudclick = function wordcloudclick(evt) {
+      var info = getInfoGridFromMouseTouchEvent(evt);
+      if (!info) {
+        return;
+      }
+
+      settings.click(info.item, info.dimension, evt);
+      evt.preventDefault();
+    };
+
+    /* Get points on the grid for a given radius away from the center */
+    var pointsAtRadius = [];
+    var getPointsAtRadius = function getPointsAtRadius(radius) {
+      if (pointsAtRadius[radius]) {
+        return pointsAtRadius[radius];
+      }
+
+      // Look for these number of points on each radius
+      var T = radius * 8;
+
+      // Getting all the points at this radius
+      var t = T;
+      var points = [];
+
+      if (radius === 0) {
+        points.push([center[0], center[1], 0]);
+      }
+
+      while (t--) {
+        // distort the radius to put the cloud in shape
+        var rx = 1;
+        if (settings.shape !== 'circle') {
+          rx = settings.shape(t / T * 2 * Math.PI); // 0 to 1
+        }
+
+        // Push [x, y, t]; t is used solely for getTextColor()
+        points.push([
+          center[0] + radius * rx * Math.cos(-t / T * 2 * Math.PI),
+          center[1] + radius * rx * Math.sin(-t / T * 2 * Math.PI) *
+            settings.ellipticity,
+          t / T * 2 * Math.PI]);
+      }
+
+      pointsAtRadius[radius] = points;
+      return points;
+    };
+
+    /* Return true if we had spent too much time */
+    var exceedTime = function exceedTime() {
+      return ((settings.abortThreshold > 0) &&
+        ((new Date()).getTime() - escapeTime > settings.abortThreshold));
+    };
+
+    /* Get the deg of rotation according to settings, and luck. */
+    var getRotateDeg = function getRotateDeg() {
+      if (settings.rotateRatio === 0) {
+        return 0;
+      }
+
+      if (Math.random() > settings.rotateRatio) {
+        return 0;
+      }
+
+      if (rotationRange === 0) {
+        return minRotation;
+      }
+
+      return minRotation + Math.random() * rotationRange;
+    };
+
+    var getTextInfo = function getTextInfo(word, weight, rotateDeg) {
+      // calculate the acutal font size
+      // fontSize === 0 means weightFactor function wants the text skipped,
+      // and size < minSize means we cannot draw the text.
+      var debug = false;
+      var fontSize = settings.weightFactor(weight);
+      if (fontSize <= settings.minSize) {
+        return false;
+      }
+
+      // Scale factor here is to make sure fillText is not limited by
+      // the minium font size set by browser.
+      // It will always be 1 or 2n.
+      var mu = 1;
+      if (fontSize < minFontSize) {
+        mu = (function calculateScaleFactor() {
+          var mu = 2;
+          while (mu * fontSize < minFontSize) {
+            mu += 2;
+          }
+          return mu;
+        })();
+      }
+
+      var fcanvas = document.createElement('canvas');
+      var fctx = fcanvas.getContext('2d', { willReadFrequently: true });
+
+      fctx.font = settings.fontWeight + ' ' +
+        (fontSize * mu).toString(10) + 'px ' + settings.fontFamily;
+
+      // Estimate the dimension of the text with measureText().
+      var fw = fctx.measureText(word).width / mu;
+      var fh = Math.max(fontSize * mu,
+                        fctx.measureText('m').width,
+                        fctx.measureText('\uFF37').width) / mu;
+
+      // Create a boundary box that is larger than our estimates,
+      // so text don't get cut of (it sill might)
+      var boxWidth = fw + fh * 2;
+      var boxHeight = fh * 3;
+      var fgw = Math.ceil(boxWidth / g);
+      var fgh = Math.ceil(boxHeight / g);
+      boxWidth = fgw * g;
+      boxHeight = fgh * g;
+
+      // Calculate the proper offsets to make the text centered at
+      // the preferred position.
+
+      // This is simply half of the width.
+      var fillTextOffsetX = - fw / 2;
+      // Instead of moving the box to the exact middle of the preferred
+      // position, for Y-offset we move 0.4 instead, so Latin alphabets look
+      // vertical centered.
+      var fillTextOffsetY = - fh * 0.4;
+
+      // Calculate the actual dimension of the canvas, considering the rotation.
+      var cgh = Math.ceil((boxWidth * Math.abs(Math.sin(rotateDeg)) +
+                           boxHeight * Math.abs(Math.cos(rotateDeg))) / g);
+      var cgw = Math.ceil((boxWidth * Math.abs(Math.cos(rotateDeg)) +
+                           boxHeight * Math.abs(Math.sin(rotateDeg))) / g);
+      var width = cgw * g;
+      var height = cgh * g;
+
+      fcanvas.setAttribute('width', width);
+      fcanvas.setAttribute('height', height);
+
+      if (debug) {
+        // Attach fcanvas to the DOM
+        document.body.appendChild(fcanvas);
+        // Save it's state so that we could restore and draw the grid correctly.
+        fctx.save();
+      }
+
+      // Scale the canvas with |mu|.
+      fctx.scale(1 / mu, 1 / mu);
+      fctx.translate(width * mu / 2, height * mu / 2);
+      fctx.rotate(- rotateDeg);
+
+      // Once the width/height is set, ctx info will be reset.
+      // Set it again here.
+      fctx.font = settings.fontWeight + ' ' +
+        (fontSize * mu).toString(10) + 'px ' + settings.fontFamily;
+
+      // Fill the text into the fcanvas.
+      // XXX: We cannot because textBaseline = 'top' here because
+      // Firefox and Chrome uses different default line-height for canvas.
+      // Please read https://bugzil.la/737852#c6.
+      // Here, we use textBaseline = 'middle' and draw the text at exactly
+      // 0.5 * fontSize lower.
+      fctx.fillStyle = '#000';
+      fctx.textBaseline = 'middle';
+      fctx.fillText(word, fillTextOffsetX * mu,
+                    (fillTextOffsetY + fontSize * 0.5) * mu);
+
+      // Get the pixels of the text
+      var imageData = fctx.getImageData(0, 0, width, height).data;
+
+      if (exceedTime()) {
+        return false;
+      }
+
+      if (debug) {
+        // Draw the box of the original estimation
+        fctx.strokeRect(fillTextOffsetX * mu,
+                        fillTextOffsetY, fw * mu, fh * mu);
+        fctx.restore();
+      }
+
+      // Read the pixels and save the information to the occupied array
+      var occupied = [];
+      var gx = cgw, gy, x, y;
+      var bounds = [cgh / 2, cgw / 2, cgh / 2, cgw / 2];
+      while (gx--) {
+        gy = cgh;
+        while (gy--) {
+          y = g;
+          singleGridLoop: {
+            while (y--) {
+              x = g;
+              while (x--) {
+                if (imageData[((gy * g + y) * width +
+                               (gx * g + x)) * 4 + 3]) {
+                  occupied.push([gx, gy]);
+
+                  if (gx < bounds[3]) {
+                    bounds[3] = gx;
+                  }
+                  if (gx > bounds[1]) {
+                    bounds[1] = gx;
+                  }
+                  if (gy < bounds[0]) {
+                    bounds[0] = gy;
+                  }
+                  if (gy > bounds[2]) {
+                    bounds[2] = gy;
+                  }
+
+                  if (debug) {
+                    fctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+                    fctx.fillRect(gx * g, gy * g, g - 0.5, g - 0.5);
+                  }
+                  break singleGridLoop;
+                }
+              }
+            }
+            if (debug) {
+              fctx.fillStyle = 'rgba(0, 0, 255, 0.5)';
+              fctx.fillRect(gx * g, gy * g, g - 0.5, g - 0.5);
+            }
+          }
+        }
+      }
+
+      if (debug) {
+        fctx.fillStyle = 'rgba(0, 255, 0, 0.5)';
+        fctx.fillRect(bounds[3] * g,
+                      bounds[0] * g,
+                      (bounds[1] - bounds[3] + 1) * g,
+                      (bounds[2] - bounds[0] + 1) * g);
+      }
+
+      // Return information needed to create the text on the real canvas
+      return {
+        mu: mu,
+        occupied: occupied,
+        bounds: bounds,
+        gw: cgw,
+        gh: cgh,
+        fillTextOffsetX: fillTextOffsetX,
+        fillTextOffsetY: fillTextOffsetY,
+        fillTextWidth: fw,
+        fillTextHeight: fh,
+        fontSize: fontSize
+      };
+    };
+
+    /* Determine if there is room available in the given dimension */
+    var canFitText = function canFitText(gx, gy, gw, gh, occupied) {
+      // Go through the occupied points,
+      // return false if the space is not available.
+      var i = occupied.length;
+      while (i--) {
+        var px = gx + occupied[i][0];
+        var py = gy + occupied[i][1];
+
+        if (px >= ngx || py >= ngy || px < 0 || py < 0 || !grid[px][py]) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    /* Actually draw the text on the grid */
+    var drawText = function drawText(gx, gy, info, word, weight,
+                                     distance, theta, rotateDeg, attributes) {
+
+      var fontSize = info.fontSize;
+      var color;
+      if (getTextColor) {
+        color = getTextColor(word, weight, fontSize, distance, theta);
+      } else if (settings.color instanceof Array) {
+        color = settings.color.shift() || 'black'; // pass a array in setting, default 'black'
+      } else {
+        color = settings.color;
+      }
+
+      var classes;
+      if (getTextClasses) {
+        classes = getTextClasses(word, weight, fontSize, distance, theta);
+      } else {
+        classes = settings.classes;
+      }
+
+      var dimension;
+      var bounds = info.bounds;
+      dimension = {
+        x: (gx + bounds[3]) * g,
+        y: (gy + bounds[0]) * g,
+        w: (bounds[1] - bounds[3] + 1) * g,
+        h: (bounds[2] - bounds[0] + 1) * g
+      };
+
+      elements.forEach(function(el) {
+        if (el.getContext) {
+          var ctx = el.getContext('2d');
+          var mu = info.mu;
+
+          // Save the current state before messing it
+          ctx.save();
+          ctx.scale(1 / mu, 1 / mu);
+
+          ctx.font = settings.fontWeight + ' ' +
+                     (fontSize * mu).toString(10) + 'px ' + settings.fontFamily;
+          ctx.fillStyle = color;
+
+          // Translate the canvas position to the origin coordinate of where
+          // the text should be put.
+          ctx.translate((gx + info.gw / 2) * g * mu,
+                        (gy + info.gh / 2) * g * mu);
+
+          if (rotateDeg !== 0) {
+            ctx.rotate(- rotateDeg);
+          }
+
+          // Finally, fill the text.
+
+          // XXX: We cannot because textBaseline = 'top' here because
+          // Firefox and Chrome uses different default line-height for canvas.
+          // Please read https://bugzil.la/737852#c6.
+          // Here, we use textBaseline = 'middle' and draw the text at exactly
+          // 0.5 * fontSize lower.
+          ctx.textBaseline = 'middle';
+          ctx.fillText(word, info.fillTextOffsetX * mu,
+                             (info.fillTextOffsetY + fontSize * 0.5) * mu);
+
+          // The below box is always matches how <span>s are positioned
+          /* ctx.strokeRect(info.fillTextOffsetX, info.fillTextOffsetY,
+            info.fillTextWidth, info.fillTextHeight); */
+
+          // Restore the state.
+          ctx.restore();
+        } else {
+          // drawText on DIV element
+          var span = document.createElement('span');
+          var transformRule = '';
+          transformRule = 'rotate(' + (- rotateDeg / Math.PI * 180) + 'deg) ';
+          if (info.mu !== 1) {
+            transformRule +=
+              'translateX(-' + (info.fillTextWidth / 4) + 'px) ' +
+              'scale(' + (1 / info.mu) + ')';
+          }
+          var styleRules = {
+            'position': 'absolute',
+            'display': 'block',
+            'font': settings.fontWeight + ' ' +
+                    (fontSize * info.mu) + 'px ' + settings.fontFamily,
+            'left': ((gx + info.gw / 2) * g + info.fillTextOffsetX) + 'px',
+            'top': ((gy + info.gh / 2) * g + info.fillTextOffsetY) + 'px',
+            'width': info.fillTextWidth + 'px',
+            'height': info.fillTextHeight + 'px',
+            'lineHeight': fontSize + 'px',
+            'whiteSpace': 'nowrap',
+            'transform': transformRule,
+            'webkitTransform': transformRule,
+            'msTransform': transformRule,
+            'transformOrigin': '50% 40%',
+            'webkitTransformOrigin': '50% 40%',
+            'msTransformOrigin': '50% 40%'
+          };
+          if (color) {
+            styleRules.color = color;
+          }
+          span.textContent = word;
+          for (var cssProp in styleRules) {
+            span.style[cssProp] = styleRules[cssProp];
+          }
+          if (attributes) {
+            for (var attribute in attributes) {
+              span.setAttribute(attribute, attributes[attribute]);
+            }
+          }
+          if (classes) {
+            span.className += classes;
+          }
+          el.appendChild(span);
+        }
+      });
+    };
+
+    /* Help function to updateGrid */
+    var fillGridAt = function fillGridAt(x, y, drawMask, dimension, item) {
+      if (x >= ngx || y >= ngy || x < 0 || y < 0) {
+        return;
+      }
+
+      grid[x][y] = false;
+
+      if (drawMask) {
+        var ctx = elements[0].getContext('2d');
+        ctx.fillRect(x * g, y * g, maskRectWidth, maskRectWidth);
+      }
+
+      if (interactive) {
+        infoGrid[x][y] = { item: item, dimension: dimension };
+      }
+    };
+
+    /* Update the filling information of the given space with occupied points.
+       Draw the mask on the canvas if necessary. */
+    var updateGrid = function updateGrid(gx, gy, gw, gh, info, item) {
+      var occupied = info.occupied;
+      var drawMask = settings.drawMask;
+      var ctx;
+      if (drawMask) {
+        ctx = elements[0].getContext('2d');
+        ctx.save();
+        ctx.fillStyle = settings.maskColor;
+      }
+
+      var dimension;
+      if (interactive) {
+        var bounds = info.bounds;
+        dimension = {
+          x: (gx + bounds[3]) * g,
+          y: (gy + bounds[0]) * g,
+          w: (bounds[1] - bounds[3] + 1) * g,
+          h: (bounds[2] - bounds[0] + 1) * g
+        };
+      }
+
+      var i = occupied.length;
+      while (i--) {
+        fillGridAt(gx + occupied[i][0], gy + occupied[i][1],
+                   drawMask, dimension, item);
+      }
+
+      if (drawMask) {
+        ctx.restore();
+      }
+    };
+
+    /* putWord() processes each item on the list,
+       calculate it's size and determine it's position, and actually
+       put it on the canvas. */
+    var putWord = function putWord(item) {
+      var word, weight, attributes;
+      if (Array.isArray(item)) {
+        word = item[0];
+        weight = item[1];
+      } else {
+        word = item.word;
+        weight = item.weight;
+        attributes = item.attributes;
+      }
+      var rotateDeg = getRotateDeg();
+
+      // get info needed to put the text onto the canvas
+      var info = getTextInfo(word, weight, rotateDeg);
+
+      // not getting the info means we shouldn't be drawing this one.
+      if (!info) {
+        return false;
+      }
+
+      if (exceedTime()) {
+        return false;
+      }
+
+      // Skip the loop if we have already know the bounding box of
+      // word is larger than the canvas.
+      var bounds = info.bounds;
+      if ((bounds[1] - bounds[3] + 1) > ngx ||
+        (bounds[2] - bounds[0] + 1) > ngy) {
+        return false;
+      }
+
+      // Determine the position to put the text by
+      // start looking for the nearest points
+      var r = maxRadius + 1;
+
+      var tryToPutWordAtPoint = function(gxy) {
+        var gx = Math.floor(gxy[0] - info.gw / 2);
+        var gy = Math.floor(gxy[1] - info.gh / 2);
+        var gw = info.gw;
+        var gh = info.gh;
+
+        // If we cannot fit the text at this position, return false
+        // and go to the next position.
+        if (!canFitText(gx, gy, gw, gh, info.occupied)) {
+          return false;
+        }
+
+        // Actually put the text on the canvas
+        drawText(gx, gy, info, word, weight,
+                 (maxRadius - r), gxy[2], rotateDeg, attributes);
+
+        // Mark the spaces on the grid as filled
+        updateGrid(gx, gy, gw, gh, info, item);
+
+        // Return true so some() will stop and also return true.
+        return true;
+      };
+
+      while (r--) {
+        var points = getPointsAtRadius(maxRadius - r);
+
+        if (settings.shuffle) {
+          points = [].concat(points);
+          shuffleArray(points);
+        }
+
+        // Try to fit the words by looking at each point.
+        // array.some() will stop and return true
+        // when putWordAtPoint() returns true.
+        // If all the points returns false, array.some() returns false.
+        var drawn = points.some(tryToPutWordAtPoint);
+
+        if (drawn) {
+          // leave putWord() and return true
+          return true;
+        }
+      }
+      // we tried all distances but text won't fit, return false
+      return false;
+    };
+
+    /* Send DOM event to all elements. Will stop sending event and return
+       if the previous one is canceled (for cancelable events). */
+    var sendEvent = function sendEvent(type, cancelable, detail) {
+      if (cancelable) {
+        return !elements.some(function(el) {
+          var evt = document.createEvent('CustomEvent');
+          evt.initCustomEvent(type, true, cancelable, detail || {});
+          return !el.dispatchEvent(evt);
+        }, this);
+      } else {
+        elements.forEach(function(el) {
+          var evt = document.createEvent('CustomEvent');
+          evt.initCustomEvent(type, true, cancelable, detail || {});
+          el.dispatchEvent(evt);
+        }, this);
+      }
+    };
+
+    /* Start drawing on a canvas */
+    var start = function start() {
+      // For dimensions, clearCanvas etc.,
+      // we only care about the first element.
+      var canvas = elements[0];
+
+      if (canvas.getContext) {
+        ngx = Math.floor(canvas.width / g);
+        ngy = Math.floor(canvas.height / g);
+      } else {
+        var rect = canvas.getBoundingClientRect();
+        ngx = Math.floor(rect.width / g);
+        ngy = Math.floor(rect.height / g);
+      }
+
+      // Sending a wordcloudstart event which cause the previous loop to stop.
+      // Do nothing if the event is canceled.
+      if (!sendEvent('wordcloudstart', true)) {
+        return;
+      }
+
+      // Determine the center of the word cloud
+      center = (settings.origin) ?
+        [settings.origin[0]/g, settings.origin[1]/g] :
+        [ngx / 2, ngy / 2];
+
+      // Maxium radius to look for space
+      maxRadius = Math.floor(Math.sqrt(ngx * ngx + ngy * ngy));
+
+      /* Clear the canvas only if the clearCanvas is set,
+         if not, update the grid to the current canvas state */
+      grid = [];
+
+      var gx, gy, i;
+      if (!canvas.getContext || settings.clearCanvas) {
+        elements.forEach(function(el) {
+          if (el.getContext) {
+            var ctx = el.getContext('2d');
+            ctx.fillStyle = settings.backgroundColor;
+            ctx.clearRect(0, 0, ngx * (g + 1), ngy * (g + 1));
+            ctx.fillRect(0, 0, ngx * (g + 1), ngy * (g + 1));
+          } else {
+            el.textContent = '';
+            el.style.backgroundColor = settings.backgroundColor;
+          }
+        });
+
+        /* fill the grid with empty state */
+        gx = ngx;
+        while (gx--) {
+          grid[gx] = [];
+          gy = ngy;
+          while (gy--) {
+            grid[gx][gy] = true;
+          }
+        }
+      } else {
+        /* Determine bgPixel by creating
+           another canvas and fill the specified background color. */
+        var bctx = document.createElement('canvas').getContext('2d');
+
+        bctx.fillStyle = settings.backgroundColor;
+        bctx.fillRect(0, 0, 1, 1);
+        var bgPixel = bctx.getImageData(0, 0, 1, 1).data;
+
+        /* Read back the pixels of the canvas we got to tell which part of the
+           canvas is empty.
+           (no clearCanvas only works with a canvas, not divs) */
+        var imageData =
+          canvas.getContext('2d').getImageData(0, 0, ngx * g, ngy * g).data;
+
+        gx = ngx;
+        var x, y;
+        while (gx--) {
+          grid[gx] = [];
+          gy = ngy;
+          while (gy--) {
+            y = g;
+            singleGridLoop: while (y--) {
+              x = g;
+              while (x--) {
+                i = 4;
+                while (i--) {
+                  if (imageData[((gy * g + y) * ngx * g +
+                                 (gx * g + x)) * 4 + i] !== bgPixel[i]) {
+                    grid[gx][gy] = false;
+                    break singleGridLoop;
+                  }
+                }
+              }
+            }
+            if (grid[gx][gy] !== false) {
+              grid[gx][gy] = true;
+            }
+          }
+        }
+
+        imageData = bctx = bgPixel = undefined;
+      }
+
+      // fill the infoGrid with empty state if we need it
+      if (settings.hover || settings.click) {
+
+        interactive = true;
+
+        /* fill the grid with empty state */
+        gx = ngx + 1;
+        while (gx--) {
+          infoGrid[gx] = [];
+        }
+
+        if (settings.hover) {
+          canvas.addEventListener('mousemove', wordcloudhover);
+        }
+
+        if (settings.click) {
+          canvas.addEventListener('click', wordcloudclick);
+          canvas.addEventListener('touchstart', wordcloudclick);
+          canvas.addEventListener('touchend', function (e) {
+            e.preventDefault();
+          });
+          canvas.style.webkitTapHighlightColor = 'rgba(0, 0, 0, 0)';
+        }
+
+        canvas.addEventListener('wordcloudstart', function stopInteraction() {
+          canvas.removeEventListener('wordcloudstart', stopInteraction);
+
+          canvas.removeEventListener('mousemove', wordcloudhover);
+          canvas.removeEventListener('click', wordcloudclick);
+          hovered = undefined;
+        });
+      }
+
+      i = 0;
+      var loopingFunction, stoppingFunction;
+      if (settings.wait !== 0) {
+        loopingFunction = window.setTimeout;
+        stoppingFunction = window.clearTimeout;
+      } else {
+        loopingFunction = window.setImmediate;
+        stoppingFunction = window.clearImmediate;
+      }
+
+      var addEventListener = function addEventListener(type, listener) {
+        elements.forEach(function(el) {
+          el.addEventListener(type, listener);
+        }, this);
+      };
+
+      var removeEventListener = function removeEventListener(type, listener) {
+        elements.forEach(function(el) {
+          el.removeEventListener(type, listener);
+        }, this);
+      };
+
+      var anotherWordCloudStart = function anotherWordCloudStart() {
+        removeEventListener('wordcloudstart', anotherWordCloudStart);
+        stoppingFunction(timer);
+      };
+
+      addEventListener('wordcloudstart', anotherWordCloudStart);
+
+      var timer = loopingFunction(function loop() {
+        if (i >= settings.list.length) {
+          stoppingFunction(timer);
+          sendEvent('wordcloudstop', false);
+          removeEventListener('wordcloudstart', anotherWordCloudStart);
+
+          return;
+        }
+        escapeTime = (new Date()).getTime();
+        var drawn = putWord(settings.list[i]);
+        var canceled = !sendEvent('wordclouddrawn', true, {
+          item: settings.list[i], drawn: drawn });
+        if (exceedTime() || canceled) {
+          stoppingFunction(timer);
+          settings.abort();
+          sendEvent('wordcloudabort', false);
+          sendEvent('wordcloudstop', false);
+          removeEventListener('wordcloudstart', anotherWordCloudStart);
+          return;
+        }
+        i++;
+        timer = loopingFunction(loop, settings.wait);
+      }, settings.wait);
+    };
+
+    // All set, start the drawing
+    start();
+  };
+
+  WordCloud.isSupported = isSupported;
+  WordCloud.minFontSize = minFontSize;
+
+  // Expose the library as an AMD module
+  if (typeof define === 'function' && define.amd) {
+    define('wordcloud', [], function() { return WordCloud; });
+  } else if (typeof module !== 'undefined' && module.exports) {
+    module.exports = WordCloud;
+  } else {
+    global.WordCloud = WordCloud;
+  }
+
+})(this); //jshint ignore:line
+</script>
+<script>// create element
+function newlabel(el){
+  var newDiv = document.createElement("div");
+  var newSpan = document.createElement("span");
+  newDiv.id = 'wcLabel';
+  newSpan.id = "wcSpan";
+  el.appendChild(newDiv);
+  document.getElementById("wcLabel").appendChild(newSpan);
+}
+
+// hover function
+function cv_handleHover(item, dimension, evt) {
+  var el = document.getElementById("wcLabel");
+  if (!item) {
+    el.setAttribute('hidden', true);
+
+    return;
+  }
+
+  el.removeAttribute('hidden');
+  // console.log(evt.srcElement.offsetLeft);
+
+  el.style.left = dimension.x + evt.srcElement.offsetLeft + 'px';
+  el.style.top = dimension.y + evt.srcElement.offsetTop + 'px';
+  el.style.width = dimension.w + 'px';
+  el.style.height = dimension.h + 'px';
+
+  this.hoverDimension = dimension;
+
+  document.getElementById("wcSpan").setAttribute(
+    'data-l10n-args', JSON.stringify({ word: item[0], count: item[1] }));
+  document.getElementById("wcSpan").innerHTML =item[0]+":" + item[1];
+
+}
+
+function updateCanvasMask(maskCanvas) {
+    var ctx = maskCanvas.getContext('2d');
+    var imageData = ctx.getImageData(
+        0, 0, maskCanvas.width, maskCanvas.height);
+    var newImageData = ctx.createImageData(imageData);
+
+    var toneSum = 0;
+    var toneCnt = 0;
+    for (var i = 0; i < imageData.data.length; i += 4) {
+        var alpha = imageData.data[i + 3];
+        if (alpha > 128) {
+            var tone = imageData.data[i]
+                + imageData.data[i + 1]
+                + imageData.data[i + 2];
+            toneSum += tone;
+            ++toneCnt;
+        }
+    }
+    var threshold = toneSum / toneCnt;
+
+    for (var i = 0; i < imageData.data.length; i += 4) {
+        var tone = imageData.data[i]
+            + imageData.data[i + 1]
+            + imageData.data[i + 2];
+        var alpha = imageData.data[i + 3];
+
+        if (alpha < 128 || tone > threshold) {
+            // Area not to draw
+            newImageData.data[i] = 0;
+            newImageData.data[i + 1] = 0;
+            newImageData.data[i + 2] = 0;
+            newImageData.data[i + 3] = 0;
+        }
+        else {
+            // Area to draw
+            // The color must be same with backgroundColor
+            newImageData.data[i] = 255;
+            newImageData.data[i + 1] = 255;
+            newImageData.data[i + 2] = 255;
+            newImageData.data[i + 3] = 255;
+        }
+    }
+
+    ctx.putImageData(newImageData, 0, 0);
+    console.log(maskCanvas.toDataURL());
+}
+
+
+
+//mask function
+function maskInit(el,x){
+  console.log(1)
+  str = x.figBase64;
+  //console.log(str)
+  var newImg = new Image();
+  newImg.src = str;
+  newImg.style.position = 'absolute';
+  newImg.style.left = 0;
+  // console.log(el.clientHeight);
+  newImg.width = el.clientWidth;
+  newImg.height = el.clientHeight;
+  // maskCanvas = init(el, x, newImg);
+  vvalue = 128
+
+  ctx = el.firstChild.getContext('2d');
+
+                ctx.drawImage(newImg, 0, 0, canvas.width, canvas.height);
+                updateCanvasMask(ctx);
+
+
+
+
+
+            WordCloud(el.firstChild, { list: listData,
+                  fontFamily: x.fontFamily,
+                  fontWeight: x.fontWeight,
+                  color: x.color,
+                  minSize: x.minSize,
+                  weightFactor: x.weightFactor,
+                  backgroundColor: x.backgroundColor,
+                  gridSize: x.gridSize,
+                  minRotation: x.minRotation,
+                  maxRotation: x.maxRotation,
+                  shuffle: x.shuffle,
+                  shape: x.shape,
+                  rotateRatio: x.rotateRatio,
+                  ellipticity: x.ellipticity,
+                  clearCanvas: false,
+                  drawMask: true,
+                  hover: x.hover || cv_handleHover,
+                  abortThreshold: 3000
+                  });
+}
+
+</script>
+<script>HTMLWidgets.widget({
+
+  name: 'wordcloud2',
+
+  type: 'output',
+
+  initialize: function(el, width, height) {
+    var newCanvas = document.createElement("canvas");
+    newCanvas.height = height;
+    newCanvas.width = width;
+    newCanvas.id = "canvas";
+
+    el.appendChild(newCanvas);
+    newlabel(el);
+    return(el.firstChild);
+  },
+  renderValue: function(el, x, instance) {
+  // parse gexf data
+        listData=[];
+        for(var i=0; i<x.word.length; i++){
+          listData.push([x.word[i], x.freq[i]]);
+        }
+     if(x.figBase64){
+
+        maskInit(el,x);
+        console.log(3)
+
+      }else{
+        WordCloud(el.firstChild, { list: listData,
+                        fontFamily: x.fontFamily,
+                        fontWeight: x.fontWeight,
+                        color: x.color,
+                        minSize: x.minSize,
+                        weightFactor: x.weightFactor,
+                        backgroundColor: x.backgroundColor,
+                        gridSize: x.gridSize,
+                        minRotation: x.minRotation,
+                        maxRotation: x.maxRotation,
+                        shuffle: x.shuffle,
+                        shape: x.shape,
+                        rotateRatio: x.rotateRatio,
+                        ellipticity: x.ellipticity,
+                        drawMask: x.drawMask,
+                        maskColor: x.maskColor,
+                        maskGapWidth: x.maskGapWidth,
+                        hover: x.hover || cv_handleHover
+                        });
+      }
+    },
+      resize: function(el, width, height) {
+      }
+
+});
+</script>
+
+</head>
+<body>
+<div id="htmlwidget_container">
+  <div class="wordcloud2 html-widget html-fill-item-overflow-hidden html-fill-item" id="htmlwidget-80772633f1b61418b669" style="width:960px;height:500px;"></div>
+</div>
+<script type="application/json" data-for="htmlwidget-80772633f1b61418b669">{"x":{"word":["신설","대중교통과","많이","배곧","광역버스","사당역","강남역으로","좋겠습니다","오산시","바랍니다","없는","정류장에","주민들이","해당","대중교통","배차","부탁드립니다","빠르게","시흥시","요청","판교","하는","호선으로","강남역","번출구","변경","순위","있는데","있어서","차선","차아파트","고덕","교통정책과","기존","노선은","대전","생각합니다","아파트","않고","이상","주공","평택","개선","경우가","교통","그리고","단계","단지","민원을","시간","시간에","안산동","알고","입니다","있고","있어","출퇴근","하차하여","경춘선","노선으로","다른","다음차","단지아파트","배차간격","번은","보면","본오","분으로","신설이","안성","없음","요구","운행","월피동","저는","지곶동","평택시","하고","항상","같습니다","것이","기다리다","기배로","기사님","까지","다반사다","다시","대한","되지","또는","민원","범계","빠른","사당역에서","사람이","상록수역","세교","시내버스","신설을","아니라","없습니다","위해","이동이","인근","인해","있으나","좋은","지나","추가","통해","호선","환승","가능한","간격으로","것을","광역버스를","다양한","대중교통을","도로","되었습니다","됩니다","마을버스","망포역","매우","모두","모든","버스노선","번과","본인","부곡동","불편을","불편합니다","비해","설치","성포동","수요","시외버스","시흥","싶습니다","아직","않습니다","알바를","없어","은혜가든","이용","이용하고","이용하는","이용하여","있지만","정차","제가","조기개통","주민들은","주민들의","지구","지하철","진행","최소","캠퍼스","편의를","필요합니다","한양대","호평","화성시","강남역우리은행","같은","개설","검토","것으로","것은","경기","경의중앙선","경의중앙선의","공공와이파이","공원","공유","구간","그래서","기산지구","기안천","대해","도로에","되어","등하교","따라","때문에","마석역","바입니다","방법","번버스","번이","분당으로","사동","사이동","상황입니다","생각이","서울","서울대학로를","서울역","세종","송탄","승차하는","시간이","신도림역","신설안","안되는","안산시","앉아","않는","않아","연결하는","연장","영등포역","오산대역","요구합니다","요청합니다","운행되고","운행하는","위례대로","위례순환로","으로","이러한","이런","이미","이에","이용이","이용할","일산행","일을","있도록","있을까요","정류장","정류장을","정왕방면","제발","제안드립니다","증차","지나는","지역","차량","최근","콩마당","평내","하나","향후","확충","환승하거나","효과","가까이","가려면","가서","강남","개선을","개통을","거리가","거주하는","거쳐","건의","건의합니다","걸어가서","경기정원가든","경우","경우도","경유해서","계속","곳에","곳이","공공와이파이의","공도","광명역","광역","교통편이","궁금하네요","그냥","그러나","그렇게","근처에","기배동","기배동은","기안동","남아","남양주시","내에","노선도","다닌다면","도로로","동탄","동탄호수","들어","듭니다","따라서","많아서","말씀","매일","먼저","미경유","바라며","바로","밖에","반도체","방향으로","배양동","배차간격이","배차는","배차시간이","버스기사에게","버스들이","버스정류장이","번을","번호","분당","분에","사업","산업단지","살고","상대적으로","새로운","서동로","서울예술대학교","서울특별시","선경아파트","선로","선부동","성남시","수요가","수요도","수원","시간대","시간대에","시간을","시민들이","신도시","싶은","아닌","아닙니까","아양동","안성시","안양","앉는","알바","어떤","어려움을","어려움이","어렵습니다","없어서","여기","여성승객","열차를","열차의","예누림아파트","오는","오산","오산교통","외에","용산","운전","원안대로","위례광장로","위례동로","이렇게","이지만","일부","있다고","있었으면","있으며","있을","자리로","잦은","저녁","전혀","정류장에서","제외되어","조성","조속히","좁은","좌석번호대로","좌석번호에","좌석제가","주시기","주요","증편","직행좌석버스","철저히","코로나","택시","특히","파주","파주시","평일","평촌","필봉터널","하는데","하면서","하여","호반","호반써밋플레이스","확인","확인할","환승하여","황구지천","효과를","효행로","훨씬","가기","가까운","가지고","가평","간격도","간격이","갈매","감독","갑질하는","강남역간","강남역까지","강남으로","강화해","같이","개통전까지","개통후","거주하며","건의가","것도","것이다","것이라","것입니다","겪고","경상남도","경유하고","경유하는","경의중앙선은","경일초등학교","경찰서","계획","곳도","공공버스","공공와이파이를","공유합니다","관리가","광명","광역버스로","굉장히","교대역","교육을","교통과","교통량이","교통이","교통정체","구간에","구길에","군공항과","그동안","그런","그런데","그럼","기다리고","기배동에는","기배로의","기사님에게","기안교차로","기여하는","기존에","기존의","기준","까마귀사진","나가는","나머지","나면","나서","넣습니다","노래","노선과","노선만","노선변경","노선변경을","노선에","노선에서","노선이며","노선인","노선입니다","노선표","논의를","높은","누가","다름이","다산역","단지가","단지건너편","당동","당왕지구","대각선횡단보도","대로","대면","대상으로","대안","대야미동","대중교통이","대책이","대하여","대해서는","더운","도로를","도심","도움이","동명아파트앞","동영상","동영상을","동탄역","동탄역을","되는","되어야","되었는데요","된다면","드립니다","들어가는","들어가서","등을","등의","때로","때문입니다","때에는","래미안아파트","롯데마켓앞","마산시외버스터미널","마을","막차","만약에","많습니다","많아","많아진","많을","말라는","말인가요","망포역에서","면밀하게","모곡","목격됐다","못하고","무책임한","문제","문제가","물론","물으니","물향기","미래","반드시","반월동","방면으로","배양간","배차시간은","버스기사","버스도","버스들은","버스로","버스이다","버스정류장은","번등","번보다","변경을","보니","보시는","보입니다","보통","본오아파트","본오아파트앞","봉담","부곡고등학교","부곡동행정복지센터","부분이","부산","북부","분간","분들이","분에서","불편","불편한","불편함이","브리즈힐","뿐만","사거리","사는","사람들이","사실상","사업에서","사유가","사항","사항을","사회","삼성중앙빌라앞","상록수역에서","상록수현대","새로","생각됩니다","생명공원","생활하는데","서부로와","서울대학로","서울시","서정리역","서초문화예술정보학교","서초아트자이아파트","서초역","석수역","선로의","선부동차고지","선부초등학교","설악터미널","성포중학교","세기병원","세상에","셔틀열차","소음","수도","수도권","수암동","수암파출소","수암파출소에서","수요를","수원시","수인분당선","수정한양","수정한양아파트","순간","승객들","승객들이","승객분이","시간대의","시간표를","시급합니다","시내까지","시내를","시내버스를","시랑운동장건너편","시민","시민들의","시민봉사담당관","시민입니다","시에","시에서","시의","시일","신규","신안","신안산대학교","신우아파트","실시간","실정입니다","실제로","심각한","심각합니다","심한","써밋플레이스","아니면","아직까지","안내가","안내문","안산","안산고등학교","안산역","안산현대","안전을","안지켜지느냐","않은","않을까","앞에","앞에서","양노선","양산","어느","어디서","어려운","언제","없는데","없이","여성","여의도로","여의도환승센터","여전히","역까지","역시","연이어","열녀문사거리","열차","영현빌딩앞","옆좌석에","예를","예상됩니다","예정되어","오가는","오늘","오래","오송역을","오이도","오전","옮겨","와동","와동중학교","와동체육공원","와동행정복지센터","와우","와우고","왕숙","왕숙역","요약","요청드리고자","요청드립니다","요청의","용산역","우면동","운영될","운정","운행되는","운행실태에","운행을","운행하고","운행횟수","원인은","원활한","월드아파트","월에","월피현대아파트","위례동로는","위하여","위해서","위해서는","유지","은계","은계지구","이동","이동하는","이마트","이어주는","이용하란다","이유","이전","이전에","이천","이천을","인도에","인하여","일반버스","일부로","입주민들은","입주민들의","입주민들이","있게","있다","있다면","있던","있었음에도","있으니","있지","자세히","자연부락","자전거도로","자전거도로가","자족시설","자주","자차가","자차로","자치행정과","재개해주세요","저희","적은","전신주가","전용","점검하고","점을","정거장에","정도","정류장까지","정류장의","정말","정보","정상","정왕","정재초등학교","정차하는","정착되도록","정책에도","정책은","제공되고","제공할","제기","제대로","제안드린","조차","좋습니다","좋지가","좌석에","주공그린빌아파트","주기를","주민들을","주민입니다","주변","주변에","주차","중앙역에서","중에도","지금","지나간다","지나고","지나치게","지난","지속적으로","지역에","지자체는","지제역","지중화","직결","직결운행","직원들은","직접","직행버스","진위역","징계를","차량을","차에","창동연립","청량리역","청주시","촉구","촉구한다","추진을","추진하고","춘천","출구","출근을","출발","출퇴근을","출퇴근하기","출퇴근할","크게","큽니다","타던","통학","통학로","통학로인","퇴근시간이","파이낸셜뉴스","파주시에","편도","편리해집니다","편의","편하게","평내호평","평시에도","평택과","필요","필요하다고","하네요","하니","하여금","하여야","하차","한개","한국디지털미디어고등학교","한꺼번에","한양아파트","해결","해송십리로","해야","해운대","해주셨으면","현황","협소한","협의하여","형평성에","호선을","호수동","호수마을아파트","혹시","홍익대학교","확인을","확충을","환승노선으로","환승을","환승해서","환승해야","회사","회전반경","횡단보도","효율이","효행지구","가게들은","가게들의","가까워","가까워질","가깝습니다","가깝지만","가는것","가는게","가는데","가는식으로","가능하다는","가능해져","가능해집니다","가니","가량을","가벼려","가야","가야하나요","가야하는데","가장산업단지와","가지","가지만","가지수가","가치와","가평군","간격","간격과","간격을","간격이지만","간격좀","간에","갈곶동","갈곶동에서","갈수록","감골길앞","감사드리는","감사를","감사의","감찰실","감출수","갑니다","갑자기","강구해주셨으면","강남보다","강남역서초현대타워앞","강남역에","강남역행","강력하게","강력히","강릉선","강변","강변역","강북","강원특별자치도","같고","같다","같다면","같더라구요","같은거","같은데","개발","개발되고","개발되어야","개발에서","개발은","개방형","개봉동을","개선과","개선되고","개선되어야","개선되었으면","개선시","개선에","개선요구","개선이","개선하고","개선하면","개설되었던데","개설해야","개시되면","개시되지","개시될","개시하나요","개인병원이","개통","개통되고","개통되는","개통되면","개통되면서","개통되어","개통된지도","개통시켜주셨으면","개통하되","개통한다면","개편","개편의","개편하고","갭이","거리를","거북섬","거북섬으로","거북섬이나","거의","거제현대고속","거주","거주지역과","거주하고","거주하면서","거치는","건너는","건너다니는","건너서","건너편에","건널","건물","건물에","건물의","건설에는","건에","건의하고","건지","건지요","걸로","걸리기","걸립니다","걸어가는","걸어가야","걸어서","검토중인걸로","검토해","검토해본다","검토해주세요","검토해주셔서","검토해주셨으면","것에","것이고","것처럼","겪습니다","결과있으시길","결국","결론을","겸용도로가","경고문을","경기남부중심","경기도의료원","경기북부의","경기지역대학","경남","경로로만","경부고속도로를","경상북도","경원여객과의","경원여객에서","경원여객측에","경유","경유하도록","경유하며","경유하지","경유한다는","경의선과","경의중앙선을","경의중앙선이","경일관광경영고등학교","경제적요건","경춘선은","경향성과","계셔서","계셨습니다","계속되지","계시는","계신","계신다","계신데요","계획되어","계획에","고객들의","고객의소리","고금산","고금산지나","고급화를","고등학생","고려되어야","고려했을","고령자","고립시키는것과","고맙겟습니다","고색동","고생하시겠지만","고속도로","고속도로로","고속도로를","고압선과","고작","고잔동","고잔주공","고천동","고통을","곳에서는","곳은","공간에","공공","공공버스로","공공버스로의","공공와이파이가","공단","공덕역","공동","공무원과","공배로","공설묘지를","공영주차장","공영주차장을","공영주차장이","공용주차장도","공원을","공원이","공원화","공작한양아파트","공장과","공장들이","공장지대","공지","공지나","공지는","공지도","공지라고는","공지를","공통적으로","과언이","과연","과포화","관계로","관광","관련","관련입니다","관련한","관산중학교","관심이","관하여","관한","광덕시장","광덕중학교","광덕중학교건너편","광명사거리역","광신빌라","광역교통대책으로","광역권을","광역버스인","괜찮습니다","굉음","교류가","교육이","교체","교체하는","교통난은","교통량에","교통량을","교통분산","교통사고의","교통소외주민들에게","교통은","교통의","교통지도과","교통흐름의","구간에는","구간에서","구길","구길을","구도로를","구로디지털단지역","구로디지털단지역에서","구로세무서","구로역","구리시가","구리와","구역으로","구인구직하는","구인이","구청제","구체적으로는","구축계획에서","구하고","구하든","구하러","구해","국가철도공단","국가철도망","국방부","군공항","군포","궁금합니다","귀가하였습니다","귀가했습니다","규칙적으로","균형발전","귬형발전","그간","그것도","그것마저","그대로임에도","그때","그러니","그러세요","그런거죠","그런식으로","그렇다면","그마저도","근로자들로","근무지는","근무지들의","근무하고","근방에","근처","근처까지","근처의","금수저이고","금월","금토동의","급행열차","긍정적으로","기관의","기능을","기능이","기다려왔습니다","기다렸지만","기다리시는","기대하기","기배동보다","기배동에","기배동에서","기배동의","기배동이","기배동행정복지센터","기배로에","기배로인근","기배역사공원이","기본","기본이용요금이","기분이","기사가","기사님께서","기사님들을","기사님분들에게","기사님의","기사님이","기사들의","기사들이","기사를","기사에는","기사의","기사촌사거리","기술","기안공설묘지","기안교차로부터","기안동에","기안동에서","기안저수지","기안저수지를","기안중","기안지구와","기안초","기안초등학교","기업들의","기업이","기업지원센터","기여","기울이고","기원합니다","기좀","길게는","길어","길어서","길이","김포시가","깁니다","깊은","까마귀떼가","끊길때","끊어버려","끝입니다","끼치고","나가기엔","나가야","나가야하는","나쁘네요","나쁘지","나열된","나오는데","나왔다가","난개발","날도","날씨","날이","남기게","남깁니다","남부","남부지방법원등기국","남부터미널로","남양주","남양주시도","남양주시에","남자분이","남쪽으로","낮시간대로","낮에","내려갈","내부나","내부에","내어주시길","내에서도","내용에","내용으로","내용은","내용을","넓고","넓혀서","넘고","넘어가는","넣고","넣었지만","넣으면서","네이처포레","년간","년된사람입니다","노고에","노력에","노력을","노력해","노상","노선대로","노선들과","노선들이","노선망으로서의","노선번호와","노선변경했던","노선변경후","노선에는","노선으로의","노선이거나","노선이고","노선이나","노선이므로","노선조차","노선중","노약자임에도","노원구","노출되어","노포동","노후","논의가","논의되고","놀러가는","농기계가","높다고","높아짐","놓쳐서","놓치고","놓치면","누리고","누릴","느끼게","느끼고","느끼시길","느낀","느낀거지만","느낍니다","늘려서","늘리는","늘리셔서","늘어가고","늘어가면서","늘어나","늘어나서","늘어난","능곡역을","다녀야","다니고","다니는","다니시고","다닐","다를바없다고","다만","다소","다수의","다양성","다양하지","단계에서","단독으로","단속","단속이나","단절되어","단점이","단지도","단축되어","단축운영되기도","단축을","달래내로","담당자","담당자분이","답변","답변을","답변이","답을","당고개역","당수동","당연한","당연히","당왕지구의","당장","당정동","당황했습니다","대각선횡단보도로","대광로제비앙","대규모","대규모로","대낮","대도시와","대도시와의","대동","대동연립","대라도","대림아파트가","대림아파트에서","대만","대명고등학교","대밖에","대부분","대부분의","대부분이","대비하여","대상에서","대신","대안들이","대안으로","대안이","대왕판교","대왕판교로에서","대정도는","대중교통들과","대중교통편이","대책을","대처에","대체하였음","대체할","대학교","대해서","대화역까지","대화역까지의","더뽑아","더욱","더워죽겠는데","더워지는데","더이상","데도","데크","델타플렉스","도로가","도로공사시","도로망이","도로망이나","도로변","도로의","도로쪽","도시개발계획","도심과","도심에","도심을","도외시","도움되는","도착","도착하기","도착하지","도착할","독점을","돈을","돌아오며","돌아와서","동남","동네를","동네에","동네에서","동래","동명벽산블루밍아파트","동부","동부로","동부와는","동부종점","동부지역으로","동에","동에서","동일한","동절기","동진주택","동탄과","동탄대로를","동탄시민의","동탄으로","동화지구처럼","되거나","되기는","되기를","되나요","되는데","되는지","되니","되리라고","되어서","되었고","되었는데","되었어요","되었으면","되있던데","되지를","된다고","될지","두가지","두개가","두고","두대가","둘레길","둘어서","둘중에","뒤따라오는","드렸을때","드리고","드리는","드릴게요","듣게되는","들려","들면","들어간다는","들어갈","들어서는","들어올","들어주시면","들었는데","들여","들은","듯합니다","등에","등으로","등이","등학교","디지털미디어시티","따라서는","딸랑","때마다","또다시","라는","라성빌라","라인에도","라인은","라인의","라포레","레이크꼬모","로로","로와","로의","루트를","리슈빌레이크파크","리조트","마땅치","마산시외버스터미널에서","마석","마시던가요","마실","마을버스는","마을버스만","마을에","마음입니다","마지막에","마트도","막상","막차가","막힙니다","만드는","만들고","만들어","만만치","만명의","만약","만원입니다","만족도를","만한","많고","많아져","많으신거","많음","많지","말씀드리게","말씀드린드린","말씀을","말씀하심","말이","말입니다","말한","말할","망우","맞다고","맞다는","맞습니다","맞으세요","맞은편","맞지가","매번","매헌시민의숲","머물고","먹었습니다","멀리","멀어서","몇가지의","모두에게","모르겠군요","모르니","모순이","모습에","모습을","모습일","목감동","목감동에","목감동행정복지센터","목감지하차도입구","목요일","목적지인","몰라서","몰려있습니다","몹시","못가는","못한다고","못한다면","무궁한","무궁화호","무단횡단하여","무단횡단할","무려","무릅쓰고","무리는","무성하여","무슨","무시하고","무시하시는건지","무정차","무정차하고","무책임","문래동남성아파트","문산","문산역까지","문의","문의는","문의시","문제는","문제도","문제로","문제를","문제의","문제인데","문제입니다","문제점을","문제점이","문화","물어봐야","뭔가","미래는","미뤄지는","미미하면서","미세먼지","미준수","미집행","미치는","민간","민간개발을","민원에","민원이","민원인의","밀집된","밀집은","바뀐것을","바라고","바라보는","바람","바람대로","바로가는","바로타의","반경","반대","반대합니다","반영된다면","받았습니다","받은","발매하고","발생","발생되지","발생시키고","발생이","발생하고","발생하는","발전에도","발전을","발전이나","발전적인","방면의","방면입니다","방문객을","방문하는","방법도","방송통신대","방안은","방치하고","방향","방향보다는","배곧에서","배상","배양동의","배정되었다고","배차가","배차간격또한","배차간격은","배차간격을","배차간격의","배차되어","배차시간을","배차이지만","배치하는","백봉지구에","백운동에서","버스기사님도","버스기사님분들도","버스기사분이","버스내에서","버스도착","버스도착정보가","버스라","버스라는","버스마저도","버스만","버스밖에없읍니다","버스에","버스요금도","버스이니만큼","버스이용","버스정거장","버스정거장에서","버스정거장이","버스정류장","버스정류장에","버스정류장에서","버스정보시스템에","버스정보안내단말기","버스정책과","버스타고","버스행정","버스회사","버스회사와","버스회사의","번버스와","번버스의","번뿐","번승강장","번씩","번에","번이라는","번째는","번째로","번출구에서","번화가로의","벌어서","범계역","변경되었음에도","변경으로","변경하기","변경하여","변경해","변한","별내","별도","병원을","보게","보고","보기에는","보내기","보냄니다","보다","보도","보도가","보도도","보도블럭","보도자전거","보라는","보상을","보시고","보았는데","보여서요","보여주시면","보유하고","보장받지","보행에","보호","복복선화는","복선철도로서","복지시설","본오동","봤습니다","뵙고싶네요","부결","부근부터","부근으로","부근의","부동산","부디","부산동래까지","부산동래로","부족이라고","부족한","부족한데다가","부족해서","부족해지는","부지로","부착과","부착을","부천","부천을","부탁","부탁드려요","부탁드리겠습니다","북부지역과","북부지역의","분경","분까지","분류되어","분류해","분리가","분보다","분산","분양","분을","분이","분인","불가능에","불감증을","불공평하지","불구하고","불량과","불법","불법을","불안감을","불이익을","불이익이","불투명하며","불편감이","불편하기","불편하네요","불편하다고","불편함으로","불편함을","불편했던","비교적","비롯하여","비슷하게","비싸고","비용","비용도","비용의","빌라","빛과","빠른시일내에","빠릅니다","빠지는","빨라서","빨리","뿐더러","뿐이며","사는다","사당","사당역으로","사당역이나","사동주유소건너편","사람들도","사람들에","사람들에게","사람들은","사람들의","사람을","사람입니다","사료","사료됨니다","사료됩니다","사리역","사시는","사업기획처","사업에","사업으로","사업의","사업이","사용가능여부가","사용되지는","사이","사이동과","사이동행정복지센터","사이와","사이트를","사재를","사정을","사진파일에","사태의","사항이","삭제됐는데","산본신도시를","산부인과","산업단지가","산업단지는","산업단지로","산책로","산책로가","산책로와","산책할","살지","살짝","살피는","삼남길","삼성서초역삼세무서","삼성역","삼성전자","삼성중앙","삼정그린코아","삼척시","상권","상권과","상권이라고","상기와","상당한","상당히","상록수역앞","상록수역앞이라서","상록수역이","상록수체육관","상록수타운월드아파트","상록중학교","상봉역","상생이","상우","상태라","상태인","상태입니다","상황","상황에","상황은","상황을","상황이고","새금동","새금동에서","새금동을","새로생긴","새마을호","새벽","새벽부터","새솔동","생각나","생각되어","생각없이","생각하는","생각하며","생각하여","생각하지","생겼네요","생기거나","생기고","생기면","생기면서","생기지","생길","생길것같네요","생깁니다","생활비를","생활시설이","생활에","생활을","서강대를","서동입구에서","서로","서부에","서수원지사","서식","서울로","서울시에","서울역행","서울예술대학","서울예술대학교에","서원호텔입구","서정리역까지","서정리역은","서쪽","서초구청맞은편","서초동예술의전당","석계역","석수초등학교","선로용량은","선바위역","선부동에서","선부주공","설명","설치되고","설치되면","설치로","설치에서","설치해주시지","성남","성남글로벌융합센터","성남글로벌융합센터에","성남시내","성남시내로","성남시의료원","성남시의료원을","성동연립","성포주공","세교동을","세무서","세번에","세부","세종시","세종청사를","소개하자면","소규모","소금이","소리가","소리입니다","소외","소외되어","소외지역에","소외현상은","소요될","소요시간이","소음이","속에서도","손해에","송탄까지","쇼핑","수고와","수고하십니다","수목원","수목원로","수목원로에","수목원이","수석","수석대교","수암동에서","수업","수영공공주택지구나","수요와","수원과학대","수원대","수원대학교","수원시와","수원여대","수원역간","수익률도","수정구","수준으로","순간을","순환이","스마트교통안전과","습지공원","승객들로","승객에","승차","승차권을","승차를","승희맨션","시각","시간과의","시간내에","시간대를","시간때를","시간은","시간의","시간이라고","시간이라는","시간이랑","시간표","시간표는","시곡중학교","시골의","시급한","시내","시내들어가는","시내버스가","시내버스노선","시내버스에","시내버스에는","시내버스의","시민들까지","시민들도","시민들에게","시민이","시스템","시스템과","시에도","시외버스를","시외지역","시유지","시일이내에","시작되는지","시작됬습니다","시작을","시장님은","시점에는","시정요구","시정을","시차원의","시청","시청하며","시켜","시키는","시행","시행가능한","시흥대야역","시흥시가","시흥시에","시흥시의","식물원","신가요","신규노선","신도림동","신도시까지","신도시도","신사역","신설과","신설되서","신설되어","신설중인","신설하였으면","신설해주셨으면","신설해주시면","신소현동","신속한","신안아파트앞","신중초등학교","신천역","신천역을","신청은","신청합니다","신촌","신호","신호등","신호체계","실감하고","실감하기","실려가시는","실망감을","실용성","실정이니","실질적으로","실현되기에","심각성을","심각하지만","심각해질","심사숙고를","심심한","심지어","심지어는","심화된","십분","싶고","싶다","싶어도","싶으니","싶은데요","쓰레기입니다","쓸데없는","아니겠습니까","아니고","아니라는","아니어서","아니에요","아니오라","아닌가요","아닙니다","아래","아래와","아산병원","아슬아슬하기","아시죠","아양지구처럼","아예","아울러","아이들","아주","아침마다","아파트인","안과","안내방송이라해도","안되어","안된다는","안불편하실지","안산메트로타운푸르지오힐스테이트아파트","안산에","안산으로","안산파크푸르지오아파트","안성역","안성제일교회","안성중앙대로","안써먹는지","안양쪽에서","안오는지","안일한","안잡히고","안전과","안전문제도","안전사고에","안전에","안쪽으로","안타게","앉게","앉고","앉아서","앉으니","앉으라","앉으라고","앉을게요","않기를","않나요","않더라구요","않아도","않았습니다","않았으면","않았을","않으니","않으신지요","않지만","알게","알려드립니다","알바몬을","알았는데","암사","압니다","앞길","앞두고","앞서","앞으로","애를","양립하여","양산시민들이","양재꽃시장","양재역","어긋나는","어긋난다고","어긋하는","어디에","어떠한","어떤사람이","어떻게","어떻게든","어려우며","어려울","어려움에","어려워지고","어렵고","어렵다고","어렵다는","어렵다면","어르신들도","어르신들이","어르신분들이","어린이","어린이공원","어린이공원입니다","어마어마한","어불성설이라","어쩔","어처구니","어천역","얼굴한번","엄중","엄청난","업무","업무방식과","없고","없나","없는데다","없다고","없다면","없더군요","없애실","없어요","없어진걸로","없었으면","없으니","없으니까","없으리라고","없으며","없으면","없으면서","없을까","없이도","없지만","엊그제","에는","에서","에어컨이라도","에이스하이테크시티","여기에","여담으로","여러","여러가지","여름","여성분이","여성승객분이","여성입니다","여의도","여의도공원","여의도에","여의도지하차도입구","역을","역행","연결되는","연결되어","연결됩니다","연결하면서","연결한다면","연결해","연계","연관성도","연구단지","연장까지도","연착과","연착으로","열사병으로","열지도","열차는","열차들의","열차수는","영향은","영화","옆에있는","옆으로","옆자리","옆좌석은","예로","예비군훈련장","예비군훈련장이","예산을","예산편성","예상되는지요","예상되며","예상해본","예술인아파트","예정","예정된","예정이라고","예정인데","오는데","오래걸립니다","오래전에","오른판에","오목천동","오산대역에","오산대역을","오산시는","오산시민","오산시민들과","오산시민을","오산시의","오산에서","오산역","오산역까지","오산역에서","오산역으로","오산지","오산지역","오이도역","오전동을","오지","오후","오히려","올라갈","올려놓고","올려두면","올렸는데","올렸던데","올렸으니","올림픽대교를","올해","올해들어","옮긴다면","와야","와우리","와이파이","와이파이가","와이파이를","와중에","완공시기의","완공을","완화되어","완화할","왔는데","왔던","왕래하는데","왕복","왕복도로","왜이래요","왜이렇게","외곽에","외부","외부로","외지인","요금이","요소들에","요진아파트","요청건","요청드리는","요청사항은","용도에","용산역으로","용이동차고지","용이해져","용이해지며","용인을","우려","우리","우선","우성아파트","우성아파트건너편","우호적으로","우회전","운동하고","운영","운용","운용될","운전을","운전중에","운정에서조차","운정역","운행과","운행되면","운행될","운행됨에","운행에","운행예정이라고","운행은","운행재개","운행중인","운행토록","운행하게되어","운행하던","원곡고교","원곡동행정복지센터","원동","원상회복을","원에서","원이고","원일중학교건너편","원하고","원하는","원활구역으로의","월경부터","월광노인정","월드아파트앞","위례광장로는","위례광장로를","위례대로를","위례동로로","위례서로","위치로","위치에서","위치한","위한","위험성","위험이","위협받고","윈윈이며","유감","유독","유동","유명해질","유사하게","유사하긴","유용할","유일하게","유일한","유진투자증권","유치에","유턴이","유튜브로","융건로가","융건로는","융건릉까지","융건릉으로","융건릉이","의견을","의견이","의왕방향","의왕시","의왕톨게이트","의왕톨게이트를","의해","이거","이거는","이끌어냈지만","이동시간이","이동에","이동을","이동하는데","이동함","이동합니다","이라","이라는","이로울것네요","이루어지지","이뤄졌으면","이뤄지지","이뤄진다면","이를","이마저도","이며","이번에","이번에도","이사온지","이상은","이상입니다","이세상","이용객이","이용경험도","이용율","이용을","이용자","이용자들의","이용하곤","이용하기","이용하는데","이용하다보니","이용하던","이용하려고","이용하려면","이용하면","이용하시는","이용하지","이용할수","이용해","이용해보면","이용환경과","이유가","이유로","이음","이의를","이익을","이전까지","이전보다","이전하고","이전해","이제","이중에서","이쪽","이천에는","이하","이해관계의","이해관계자와","이해하겠지만","이후","이후로","이후의","인구","인구가","인덕원역","인덕원역을","인데","인도","인도를","인력의","인지하고","인천광역시","인천이나","인프라","인한","일단","일반","일반버스가","일반열차","일방적으로","일부터","일산","일산종착","일에","일이","일자리","일자리를","일정에도","읽어주셔서","잃었습니다","입북로에서","입사를","입사하고보니","입은","입장에서","입장에서는","입장에서도","입주","입주가","입주자들도","입주자들은","입주한","입주할때","입찰결과에","입퇴소","있고요","있기","있기는","있나","있나요","있는것도","있는바","있는지요","있다고는","있다는","있습니다만","있어도","있어야","있었던","있으리라","있으면","있으므로","있음","있음에도","있자먼","자꾸","자동차같은","자랑인","자리","자리인데요","자연부락민들이","자연부락에서","자연부락의","자체적으로","자취를","작금에","작년","작년에","작성자","작성하게","작용하는","작용할","잘되게끔","잛게는","잠깐","잠실역","장거리","장곡동에서","장기","장기화될","장상지구","장소들을","장소로","장안대","장점을","재개","재개는","재개발이","재개통","재개통이","재개통한다면","재개해야하는","재민원","저녁보다","저녁이동은","저도","저의","적게","적고","적극적인","적성면부터","적성면의","적습니다","적어놨으니","적어도","적용되기","적용이","적합한","전경련회관","전구간","전기버스로","전라북도","전략입니다","전봇대","전봇대가","전신주","전신주로","전에","전역을","전주대","전주대를","전주시","전철로","전향적으로","전화를","전후부터","절약할","점과","점만큼의","점점","접근성이","정거장","정거장을","정도는","정도만","정류장도","정류장번호","정류장은","정리해주시고","정보를","정비","정비사업","정비시","정비용역이","정비해서","정시","정신건강에","정왕방면에","정왕방면으로","정차까지","정차역에","정차역이","정차하겠습니다","정차하도록만","정차하지는","정차한다고","정책","정책에","정책으로","정책이","정체","정체나","제공","제공하고","제공해왔으나","제기하며","제기했음에도","제대로된","제방도로가","제방도로에","제시하고","제안의","제안합니다","제외가","제외는","제외입니다","제외하고","제외한","제주여행이","제주특별자치도","제초작업","제초작업이","제한도","제한적인데","조금","조금만","조기","조기투입","조기투입해서","조명","조성되던","조성사업과","조성하는","조성해","조율이","조율하여","조정을","조정해주시길","조치","조치도","조치를","조치해","조화롭게","존재하여","좁고","좁아서","좁히는","종점","종점이","종점입니다","종합병원","좋고","좋아졌으면","좋을","좌석","좌석번호","좌석번호가","좌석제를","좌회전하여","주거지역과","주길","주려는","주로","주말배차","주말에는","주민","주민들도","주민들에게만","주민을","주민의","주변은","주변의","주세요","주셨으면","주시거나","주시고","주시기를","주요업무지구와","주위","주차가","주차를","주차비가","주차장도","주차지원과","주차하는","주행","죽으란소리같네요","죽전역","준공영제","줄것을","줄여서","줄여주세요","줄이고","줄일","중간","중간중간","중거리의","중단되었으나","중북부로","중북부에도","중순","중앙대","중앙동","중앙선","중앙역과","중에","중에서","중에서도","중인","중인데","증가시키는","증가하는","증대에도","증설","증설해주세요","증차가","증차한다면","증차해","증축에","지각입니다","지구개발","지구개발과","지구개발이나","지금동","지나가고","지나가는","지나가버리고","지나가야하는","지나감에","지나갑니다","지나갔다는","지나면","지나므로","지나치시라고","지난하여","지날","지내야하는데","지능형인프라본부","지대한","지도도","지리적요건","지방","지속되고","지식산업센터","지역과","지역도","지역들은","지역에서","지역의","지역이","지역입니다","지역주민들","지역주민입니다","지연","지원하며","지자체의","지장이","지저분한","지점","지정되어","지제역과","지제역까지","지제역부터","지제역에서는","지중화가","지중화되기를","지켜볼게요","지키지","지하차로를","지하철은","지하철을","지하화","지하화를","직결화","직선거리는","직업윤리에도","직업으로","직원","직장인들만","직장인의","직장인이","직접적이며","직접적인","직통하는","직행하는","진심으로","진안","진입하는데","진입하여","진출입로를","진행중이고","진행중인","진화하는","질문","집중되어","짜셨는지","짜여야","짧기","짧은","짧은데","쪽으로","쪽이","차량등록사업소","차량번호","차량용","차량으로","차량의","차량이","차량이나","차로","차를","차선으로","차질이","착공예정입니다","찬성을하고","참고","창가","창동","창문","창문을","찾기는","책임은","처럼","처리되었음을","처음부터","천년가리더스카이아파트","천산교회맞은편","철도교통과","철로를","첫번째로","청년들","청년들은","청년들의","청년입니다","청량리","청량리역은","청소년들이","청소년부터","청주","청춘","체계를","체계와","초년생","초년생들은","초년생들이나","초당초등학교","초등학교","초등학교를","초등학생","초래","초입에","초지역","초지역에서","최근에는","최소한","최소한의","추가되었으면","추가로","추가설치","추정","추진","추진되고","추진에","추후","출근","출근시간대","출근시간에","출근하시는","출근할","출발하는","출발하여","출발한","출처","출퇴근때","출퇴근버스","출퇴근시","출퇴근시간의","출퇴근에","출퇴근의","출퇴근이","출퇴근하는","충분치","충청북도","취락지구가","측면에서도","측면을","치명적인","카카오택시는","코로나가","코로나로","콜택시","쾌적한","클러스터에","타고자하는","타기","타는","타는거","타다가","타려면","타면","타면서","타서","타시던데","타야","타지","타지역에","타지역으로의","탄생한","탑승객","탑승이","탑승장소","탑승하는","탑승할","탑승했을","태도","태도로","태도에","태양","태영아파트","태평역에서","택시타고","택시타는것이","택지","터미널","턱없이","텀을","텀이","테크노폴","토지소유자","톤이","통과하여","통하여","통학을","통학이","통해서","통행도","퇴근시간대에","퇴근이","투입이","투자","트램이","특별한","특혜를","특히나","틀어놓고","파주의","판교로","판단이","판단해보고","퍼스티움","편리하겠습니다","편리함을","편리해졌으면","편의가","편익과","편익에","편익을","편익이","편입","편입에","편입희망하는","편중되어","편한세상상록","편한세상상록아파트","평균","평균적인","평내는","평일배차","평촌역","평택부발선을","평택시민들까지도","평택시민들의","평택에는","폐선되었습니다","폐지","포함","포함되면","포함되어지지","포함시켜주세요","포항시","포항역","포항역에서","표시되지","풀었는데","풀이","피로하여","피부과","피할","피해를","필봉터널을","필봉터널이","필요로","필요성이","필요에","필요하기","필요하다는","필요한","필요해","하게","하겠습니다","하고있는","하고자","하교","하기","하기와","하나로는","하늘휴게소","하드라도","하든","하라는","하려면","하루","하루전날","하시고","하시나요","하시는","하시는건지","하시는것은","하시면서","하시어","하였으나","하이닉스가","하지","하차한","학교","학교까지","학교나","학생","학생들과","학생들의","학생들이","한강다리를","한국거래소","한국전력공사","한국지능정보사회진흥원","한다","한대","한대만","한대씩","한번에","한시간에","한신대","한양","한양산호","한적하여","한전과","한정된","한층","할것","할때","할말을","함께해왔습니다","합니까","항의","해결하기","해결할","해놓으실거같으면","해당시기까지","해도","해서","해송십리로를","해야한다고","해양동","해주세요","해주셔도","해주시거나","해주시길","해주시면","해줄방법도","해줄생각도","핸드폰","핸드폰으로","핸드폰을","했는데","했습니다","했어요","행동이라","행정","행정구역","행정중심복합도시건설청에서","향하는","허가해놓고","허가해준데","현상을","현시각","현안","현재는","현재의","현행대로","협력업체가","협성대","협소하고","협의를","협의만","혜택입니다","호반써밋","호반써밋라포레","호선과","호소하고","호소하지","호수공원으로","호수공원화","혹은","혼용","홍대입구","홍보","홍익고등학교","홍익대","홍익디자인고","홍익디자인고등학교","화가나네요","화물열차까지","화성","화성시에서는","화성시의","확대","확대요구","확보가","확산되면서","확실","확연하게","확인이","확인하고","확인하며","확장","확장공사","확장될","확정하고","확충과","확충의","환경입니다","환승버스정류장을","환승역인","환승할","환자들이","활발해지고","활성화","활성화를","황구지천까지만","황금노선입니다","회신","회전반경을","회전반경이","회전하는","회차를","획기적으로","횡단보도가","횡단보도를","효과가","효율적이라고","효율적이지","효율적인","효행로가","효행지구가","흔한","흡수하는만큼","흡수하며","흡족할","흥해로","흥해방향","흥해주민들만","흥해행","희망합시다","힐리조트에서","힐스테이트지제역","힘들게","힘이"],"freq":[24,20,18,18,17,16,14,14,13,12,12,12,12,12,11,11,11,11,11,11,11,11,11,10,10,10,10,10,10,10,10,9,9,9,9,9,9,9,9,9,9,9,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"fontFamily":"Segoe UI","fontWeight":"bold","color":"random-dark","minSize":0,"weightFactor":7.5,"backgroundColor":"white","gridSize":0,"minRotation":-0.7853981633974483,"maxRotation":0.7853981633974483,"shuffle":true,"rotateRatio":0.3,"shape":"circle","ellipticity":0.65,"figBase64":null,"hover":null},"evals":[],"jsHooks":{"render":[{"code":"function(el,x){\n                        console.log(123);\n                        if(!iii){\n                          window.location.reload();\n                          iii = False;\n\n                        }\n  }","data":null}]}}</script>
+<script type="application/htmlwidget-sizing" data-for="htmlwidget-80772633f1b61418b669">{"viewer":{"width":450,"height":350,"padding":0,"fill":true},"browser":{"width":960,"height":500,"padding":0,"fill":true}}</script>
+</body>
+</html>
