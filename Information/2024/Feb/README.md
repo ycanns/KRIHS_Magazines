@@ -15,7 +15,7 @@
     
 ![Build Status](https://img.shields.io/badge/R-R?color=lightblue&logo=R)
 
- <br> <a href="https://library.krihs.re.kr/dl_image2/IMG/08/000000035969/SERVICE/000000035969_01.PDF"><strong>빅데이터로 국토읽기 2024년 2월호 보기 »</strong></a>
+ <br> <a href="https://library.krihs.re.kr/dl_image2/IMG/08/000000036404/SERVICE/000000036404_01.PDF"><strong>빅데이터로 국토읽기 2024년 2월호 보기 »</strong></a>
     <br />
 
 <br> 
